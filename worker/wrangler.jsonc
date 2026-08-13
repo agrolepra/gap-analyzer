@@ -1,10 +1,7 @@
-/**
- * For more details on how to configure Wrangler, refer to:
- * https://developers.cloudflare.com/workers/wrangler/configuration/
- */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "worker",
+	"name": "gap-analyzer-worker",
+	"account_id": "4332c80d60c65b8191fa453f3bb0ee74",
 	"main": "src/index.js",
 	"compatibility_date": "2026-08-10",
 	"observability": {
@@ -12,26 +9,24 @@
 	},
 	"triggers": {
 		"crons": [
-			"0 18 * * 1-5" 
+			"0 18 * * 1-5"
 		]
 	},
 	"d1_databases": [
 		{
 			"binding": "DB",
 			"database_name": "gap-analyzer-db",
-			"database_id": "REPLACE_WITH_YOUR_DB_ID"
+			"database_id": "6dc3cf62-fbf8-4a10-82b9-4be8c5a0422e"
 		}
 	]
 	/**
-	 * Nota sobre Variables de Entorno (Secrets):
-	 * Para que el Cron funcione, debes usar `wrangler secret put <NOMBRE>`
-	 * Variables esperadas: 
+	 * Secrets necesarios (usar: npx wrangler secret put <NOMBRE>):
 	 * - TWELVEDATA_API_KEY
 	 * - ANTHROPIC_API_KEY
 	 * - RESEND_API_KEY
 	 * - EMAIL_TO
 	 * - WHATSAPP_PHONE
 	 * - WHATSAPP_API_KEY
-	 * - TICKERS (ej. "AAPL,MSFT,TSLA")
+	 * - TICKERS (ej: "AAPL,MSFT,TSLA")
 	 */
 }

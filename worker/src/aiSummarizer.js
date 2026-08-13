@@ -1,47 +1,43 @@
-export async function generateSummary(gaps, apiKey) {
-    if (!apiKey) return null;
-
-    // Filtramos solo los gaps relevantes para no exceder los tokens (ej. <= 7%)
-    const relevantGaps = gaps.filter(g => g.distClosestPct <= 7);
-    
-    if (relevantGaps.length === 0) {
-        return "No se encontraron gaps relevantes (a menos del 7% de distancia) en la sesión de hoy.";
+export async function generateSummary(gaps, openAiKey) {
+    if (!openAiKey) {
+        return null;
     }
 
-    const prompt = `
-Eres un analista financiero experto. 
-A continuación te proporciono una lista de 'gaps' (huecos de precios) en el mercado bursátil que aún no han sido cubiertos y que se encuentran a un 7% o menos de distancia del precio de cierre actual.
+    const prompt = `Sos un analista financiero experto en trading técnico. Analiza los siguientes gaps de precios (espacios en blanco en el gráfico que aún no se han cubierto) y redactá un resumen conciso, directo y profesional para un trader.
 
-Datos:
-${JSON.stringify(relevantGaps, null, 2)}
+Para cada gap destacado indicá: ticker, tipo (alcista/bajista), distancia actual al gap y si es una oportunidad relevante.
 
-Por favor, redacta un resumen ejecutivo muy breve (máximo 3 párrafos cortos) pensado para ser enviado por WhatsApp a un inversor. 
-Destaca únicamente los casos más críticos o interesantes (los que están más cerca de cubrirse o son de empresas muy relevantes).
-No incluyas saludos largos, ve directo al grano.
-    `;
+Datos de Gaps encontrados:
+${JSON.stringify(gaps.slice(0, 15), null, 2)}
+
+Respondé en español, en 3-5 párrafos como máximo. Empezá con el panorama general y terminá con recomendaciones de seguimiento.`;
 
     try {
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
             method: 'POST',
             headers: {
-                'x-api-key': apiKey,
-                'anthropic-version': '2023-06-01',
-                'content-type': 'application/json'
+                'Authorization': `Bearer ${openAiKey}`,
+                'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                model: 'claude-3-haiku-20240307',
-                max_tokens: 300,
-                messages: [{ role: 'user', content: prompt }]
+                model: 'gpt-4o-mini',
+                max_tokens: 1024,
+                messages: [
+                    { role: 'user', content: prompt }
+                ]
             })
         });
 
-        const data = await response.json();
-        if (data.content && data.content.length > 0) {
-            return data.content[0].text;
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error("Error from OpenAI API:", errorText);
+            return null;
         }
-        return "Resumen generado vacío o error en Claude.";
+
+        const data = await response.json();
+        return data.choices?.[0]?.message?.content || null;
     } catch (e) {
-        console.error("Error conectando con Claude:", e);
-        return "Error al generar el resumen con IA.";
+        console.error("Exception generating AI summary:", e);
+        return null;
     }
 }

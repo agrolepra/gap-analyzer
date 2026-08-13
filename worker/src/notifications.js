@@ -1,5 +1,4 @@
 export async function sendEmail(content, env) {
-    // Usando Resend API (o servicio similar)
     if (!env.RESEND_API_KEY || !env.EMAIL_TO) {
         console.log("Email no configurado (Falta RESEND_API_KEY o EMAIL_TO)");
         return;
@@ -13,7 +12,7 @@ export async function sendEmail(content, env) {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                from: 'GapAnalyzer <gaps@resend.dev>',
+                from: 'GapAnalyzer <onboarding@resend.dev>',
                 to: [env.EMAIL_TO],
                 subject: 'Reporte Diario de Gaps 📈',
                 html: `<p>Aquí tienes el resumen diario del mercado:</p><br><p>${content.replace(/\n/g, '<br>')}</p>`
@@ -26,7 +25,6 @@ export async function sendEmail(content, env) {
 }
 
 export async function sendWhatsApp(content, env) {
-    // Usando CallMeBot (WhatsApp API gratuita para uso personal) o Twilio
     if (!env.WHATSAPP_PHONE || !env.WHATSAPP_API_KEY) {
         console.log("WhatsApp no configurado (Falta WHATSAPP_PHONE o API_KEY)");
         return;

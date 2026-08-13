@@ -1,25 +1,58 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { Button } from '../atoms/Button';
-import { Input } from '../atoms/Input';
 import { FormField } from '../molecules/FormField';
-import { GapTable, GapData } from '../organisms/GapTable/GapTable';
+import { TickerChips } from '../atoms/TickerChips/TickerChips';
+import { GapTable, type GapData } from '../organisms/GapTable/GapTable';
+import { useAuth } from '../../context/AuthContext';
 import styles from './DashboardPage.module.css';
 
 export const DashboardPage: React.FC = () => {
-  const [tickersInput, setTickersInput] = useState('');
+  const { authFetch } = useAuth();
+  const [tickers, setTickers] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
   const [allGaps, setAllGaps] = useState<GapData[]>([]);
   const [filteredGaps, setFilteredGaps] = useState<GapData[]>([]);
+  const [lastAnalysis, setLastAnalysis] = useState<string | null>(null);
+  const [aiSummary, setAiSummary] = useState<string | null>(null);
+
+  // Cargar lista persistente de tickers y último análisis
+  useEffect(() => {
+    const savedTickers = localStorage.getItem('dashboardTickers');
+    if (savedTickers) {
+      try {
+        setTickers(JSON.parse(savedTickers));
+      } catch (e) {
+        console.error('Error cargando dashboardTickers', e);
+      }
+    }
+
+    const savedState = localStorage.getItem('dashboardState');
+    if (savedState) {
+      try {
+        const parsed = JSON.parse(savedState);
+        if (parsed.allGaps) setAllGaps(parsed.allGaps);
+        if (parsed.filteredGaps) setFilteredGaps(parsed.filteredGaps);
+        if (parsed.timestamp) setLastAnalysis(parsed.timestamp);
+        if (parsed.aiSummary) setAiSummary(parsed.aiSummary);
+      } catch (e) {
+        console.error('Error restaurando dashboardState', e);
+      }
+    }
+  }, []);
+
+  const handleTickersChange = (newTickers: string[]) => {
+    setTickers(newTickers);
+    localStorage.setItem('dashboardTickers', JSON.stringify(newTickers));
+  };
 
   const handleAnalyze = async () => {
     setError(null);
-    const tickers = tickersInput.split(/[\n,;\s]+/).map(t => t.trim().toUpperCase()).filter(t => t);
     
     if (tickers.length === 0) {
-      setError('Por favor, ingresa al menos un ticker.');
+      setError('Por favor, agrega al menos un ticker.');
       return;
     }
 
@@ -43,13 +76,20 @@ export const DashboardPage: React.FC = () => {
     }
 
     setLoading(true);
+    setAiSummary(null);
+
+    // Leer aiKey del localStorage si hay y está habilitada
+    let aiKey: string | undefined;
+    try {
+      const cfg = JSON.parse(localStorage.getItem('gapAnalyzerConfig') || '{}');
+      if (cfg.enableAI && cfg.aiKey) aiKey = cfg.aiKey;
+    } catch (_) {}
     
     try {
-      // Usar URL local por ahora (en prod se ajustaría)
-      const res = await fetch('http://localhost:8787/api/analyze', {
+      const res = await authFetch('https://gap-analyzer-worker.agrolepra.workers.dev/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tickers, apiKey })
+        body: JSON.stringify({ tickers, apiKey, ...(aiKey ? { aiKey } : {}) })
       });
 
       const data = await res.json();
@@ -59,9 +99,21 @@ export const DashboardPage: React.FC = () => {
       }
 
       const results: GapData[] = data.gaps || [];
+      const filterRes = results.filter(g => g.distClosestPct <= 7);
       
       setAllGaps(results);
-      setFilteredGaps(results.filter(g => g.distClosestPct <= 7));
+      setFilteredGaps(filterRes);
+      if (data.aiSummary) setAiSummary(data.aiSummary);
+      const ts = new Date().toISOString();
+      setLastAnalysis(ts);
+
+      // Guardar en localStorage
+      localStorage.setItem('dashboardState', JSON.stringify({
+        allGaps: results,
+        filteredGaps: filterRes,
+        aiSummary: data.aiSummary || null,
+        timestamp: ts
+      }));
 
     } catch (err: any) {
       setError(err.message || 'Error desconocido al analizar los gaps.');
@@ -75,7 +127,6 @@ export const DashboardPage: React.FC = () => {
 
     const wb = XLSX.utils.book_new();
 
-    // Hoja 1: Resumen General
     const wsAll = XLSX.utils.json_to_sheet(allGaps.map(g => ({
       'Ticker': g.ticker,
       'Tipo': g.type,
@@ -89,7 +140,6 @@ export const DashboardPage: React.FC = () => {
     })));
     XLSX.utils.book_append_sheet(wb, wsAll, "Resumen General");
 
-    // Hoja 2: Gaps <= 7%
     const wsFiltered = XLSX.utils.json_to_sheet(filteredGaps.map(g => ({
       'Ticker': g.ticker,
       'Tipo': g.type,
@@ -109,21 +159,21 @@ export const DashboardPage: React.FC = () => {
   return (
     <div className={styles.page}>
       <div className={styles.header}>
-        <h1 className="text-gradient">Dashboard de Gaps</h1>
+        <h1>Dashboard de Gaps</h1>
         <p>Analiza el mercado y encuentra oportunidades de gaps no cubiertos.</p>
+        {lastAnalysis && (
+           <p style={{fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '8px'}}>
+             Último análisis: {new Date(lastAnalysis).toLocaleString()}
+           </p>
+        )}
       </div>
 
       <div className={`glass-panel ${styles.panel}`}>
         <FormField 
           label="Lista de Tickers" 
-          description="Pega aquí los símbolos separados por coma, espacio o saltos de línea (ej. AAPL, MSFT, TSLA)."
+          description="Escribe o pega los tickers (se autocompletan al presionar Enter, Espacio, Coma o Tab)."
         >
-          <Input 
-            multiline 
-            placeholder="AAPL&#10;MSFT&#10;TSLA" 
-            value={tickersInput}
-            onChange={(e) => setTickersInput(e.target.value)}
-          />
+          <TickerChips tickers={tickers} onChange={handleTickersChange} />
         </FormField>
 
         {error && <div className={styles.error}>{error}</div>}
@@ -141,6 +191,18 @@ export const DashboardPage: React.FC = () => {
           </Button>
         </div>
       </div>
+
+      {aiSummary && (
+        <div className="glass-panel" style={{ padding: '24px', borderLeft: '3px solid var(--accent-primary)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+            <span style={{ fontSize: '1.2rem' }}>✨</span>
+            <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 600, color: '#a5b4fc' }}>Análisis IA (GPT-4o-mini)</h3>
+          </div>
+          <p style={{ margin: 0, lineHeight: 1.7, color: 'var(--text-secondary)', fontSize: '0.9rem', whiteSpace: 'pre-wrap' }}>
+            {aiSummary}
+          </p>
+        </div>
+      )}
 
       {allGaps.length > 0 && (
         <div className={styles.resultsArea}>

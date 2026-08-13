@@ -1,0 +1,157 @@
+.tableContainer {
+  width: 100%;
+  overflow-x: auto;
+  max-height: 550px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.empty {
+  padding: 30px;
+  text-align: center;
+  color: var(--text-muted);
+  font-style: italic;
+  border: 1px dashed var(--border-color);
+  border-radius: 12px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 0.82rem;
+}
+
+.table th {
+  padding: 10px 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.table th:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ticker {
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.sortIcon {
+  opacity: 0.3;
+  margin-left: 4px;
+  font-size: 0.8em;
+}
+
+.sortIconActive {
+  opacity: 1;
+  margin-left: 4px;
+  font-size: 0.8em;
+  color: var(--accent-primary);
+}
+
+/* Colores de columnas específicos */
+.colDate {
+  color: #60a5fa !important;
+}
+
+.colPrice {
+  color: #f8f9fa !important;
+  font-weight: 600;
+}
+
+.colMuted {
+  color: #a0a0ab !important;
+}
+
+.colHigh {
+  color: #10b981 !important;
+}
+
+.colLow {
+  color: #ef4444 !important;
+}
+
+.mobileCards {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .tableContainer {
+    display: none;
+  }
+  .mobileCards {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 16px;
+  }
+  .mobileCard {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .mobileCardHeader {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    padding-bottom: 8px;
+  }
+  .mobileTicker {
+    font-size: 1.1rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: var(--text-primary);
+  }
+  .mobileCardBody {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 0.85rem;
+  }
+  .mobileCardRow {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: var(--text-secondary);
+  }
+  .mobileCardRow span:last-child {
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+}

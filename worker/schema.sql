@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS daily_prices (
     high_price REAL NOT NULL,
     low_price REAL NOT NULL,
     close_price REAL NOT NULL,
+    volume INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(ticker, date)
 );
@@ -17,7 +18,7 @@ CREATE TABLE IF NOT EXISTS daily_prices (
 CREATE TABLE IF NOT EXISTS gaps_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticker TEXT NOT NULL,
-    type TEXT NOT NULL, -- 'Alcista' o 'Bajista'
+    type TEXT NOT NULL,
     gap_date TEXT NOT NULL,
     closest_point REAL NOT NULL,
     farthest_point REAL NOT NULL,
@@ -31,7 +32,13 @@ CREATE TABLE IF NOT EXISTS gaps_history (
 
 CREATE TABLE IF NOT EXISTS audit_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    action TEXT NOT NULL, -- Ej: 'ANALISIS_MANUAL', 'CRON_AUTOMATICO'
+    action TEXT NOT NULL,
     details TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+    token TEXT PRIMARY KEY,
+    username TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

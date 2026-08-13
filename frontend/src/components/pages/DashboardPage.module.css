@@ -27,6 +27,23 @@
   display: flex;
   gap: 16px;
   margin-top: 24px;
+  flex-wrap: wrap;
+}
+
+.filterInput, .filterSelect {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 0.9rem;
+  color-scheme: dark;
+}
+
+.filterSelect option {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
 }
 
 .error {
@@ -54,4 +71,26 @@
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 768px) {
+  .header {
+    margin-bottom: 20px;
+  }
+  .header h1 {
+    font-size: 1.5rem;
+  }
+  .panel {
+    padding: 16px;
+    margin-bottom: 20px;
+  }
+  .actions {
+    gap: 10px;
+  }
+  .resultsArea {
+    margin-top: 24px;
+  }
+  .tableTitle {
+    font-size: 1rem;
+  }
 }

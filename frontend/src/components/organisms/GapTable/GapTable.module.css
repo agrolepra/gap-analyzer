@@ -1,13 +1,14 @@
 .tableContainer {
   width: 100%;
   overflow-x: auto;
+  max-height: 550px;
   border-radius: 12px;
   border: 1px solid var(--border-color);
   background: rgba(0, 0, 0, 0.2);
 }
 
 .empty {
-  padding: 40px;
+  padding: 30px;
   text-align: center;
   color: var(--text-muted);
   font-style: italic;
@@ -19,20 +20,23 @@
   width: 100%;
   border-collapse: collapse;
   text-align: left;
-  font-size: 0.9rem;
+  font-size: 0.82rem;
 }
 
 .table th {
-  padding: 16px;
+  padding: 10px 12px;
   font-weight: 600;
   color: var(--text-secondary);
   border-bottom: 1px solid var(--border-color);
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--bg-secondary);
   white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 2;
 }
 
 .table td {
-  padding: 16px;
+  padding: 8px 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);
   color: var(--text-primary);
   white-space: nowrap;
@@ -57,9 +61,9 @@
 }
 
 .badge {
-  padding: 4px 10px;
+  padding: 3px 8px;
   border-radius: 20px;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   font-weight: 600;
   display: inline-block;
 }
@@ -74,4 +78,140 @@
   background: var(--danger-bg);
   color: var(--danger);
   border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.table th {
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s;
+}
+
+.table th:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.sortIcon {
+  opacity: 0.3;
+  margin-left: 4px;
+  font-size: 0.8em;
+}
+
+.sortIconActive {
+  opacity: 1;
+  margin-left: 4px;
+  font-size: 0.8em;
+  color: var(--accent-primary);
+}
+
+.filters {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 20px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.filterInput, .filterSelect {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 0.9rem;
+  color-scheme: dark;
+}
+
+.filterSelect option {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.filterInput:focus, .filterSelect:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+}
+
+@media (max-width: 768px) {
+  .filters {
+    gap: 10px;
+  }
+  .filterInput, .filterSelect {
+    font-size: 0.8rem;
+    padding: 7px 10px;
+  }
+}
+
+.resultCount {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin-left: auto;
+}
+
+/* Colores de columnas específicos */
+.colDate {
+  color: #60a5fa !important;
+}
+
+.colPrice {
+  color: #f8f9fa !important;
+  font-weight: 600;
+}
+
+.colMuted {
+  color: #a0a0ab !important;
+}
+
+.mobileCards {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .tableContainer {
+    display: none;
+  }
+  .mobileCards {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 16px;
+  }
+  .mobileCard {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .mobileCardHeader {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    padding-bottom: 8px;
+  }
+  .mobileTicker {
+    font-size: 1.1rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: var(--text-primary);
+  }
+  .mobileCardBody {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 0.85rem;
+  }
+  .mobileCardRow {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: var(--text-secondary);
+  }
+  .mobileCardRow span:last-child {
+    color: var(--text-primary);
+    font-weight: 500;
+  }
 }

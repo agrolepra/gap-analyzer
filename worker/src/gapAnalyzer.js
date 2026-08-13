@@ -21,11 +21,10 @@ export function analyzeGaps(ticker, data) {
         // 1. Procesar gaps activos contra el rango del día actual (forward fill)
         let nextActiveGaps = [];
         for (let gap of activeGaps) {
-            // Si hay superposición (overlap) entre el rango del día y el gap
             if (cLow <= gap.top && cHigh >= gap.bottom) {
                 // Caso 1: Cobertura total
                 if (cLow <= gap.bottom && cHigh >= gap.top) {
-                    continue; // Se elimina el gap (no lo agregamos a nextActiveGaps)
+                    continue; // Se cierra el gap completamente
                 }
                 // Caso 2: Cubre la parte superior
                 else if (cLow > gap.bottom && cHigh >= gap.top) {
@@ -41,7 +40,6 @@ export function analyzeGaps(ticker, data) {
                     nextActiveGaps.push({ ...gap, bottom: cHigh });
                 }
             } else {
-                // Sin cobertura hoy, el gap sigue intacto
                 nextActiveGaps.push(gap);
             }
         }
@@ -51,48 +49,44 @@ export function analyzeGaps(ticker, data) {
         if (cLow > pHigh) {
             // Gap Alcista
             activeGaps.push({
-                ticker: ticker,
-                type: 'Alcista',
-                date: curr.datetime,
-                top: cLow,
-                bottom: pHigh
+                ticker,
+                type: 'Bullish',
+                gap_date: curr.datetime,
+                bottom: pHigh,
+                top: cLow
             });
         } else if (cHigh < pLow) {
             // Gap Bajista
             activeGaps.push({
-                ticker: ticker,
-                type: 'Bajista',
-                date: curr.datetime,
-                top: pLow,
-                bottom: cHigh
+                ticker,
+                type: 'Bearish',
+                gap_date: curr.datetime,
+                bottom: cHigh,
+                top: pLow
             });
         }
     }
     
-    // 3. Dar formato a los resultados
-    let currentClose = parseFloat(data[data.length - 1].close);
-    
+    // Procesar los gaps activos finales para añadir métricas adicionales
+    const currentPrice = parseFloat(data[data.length - 1].close);
+    const analysisDate = data[data.length - 1].datetime;
+
     return activeGaps.map(gap => {
-        let dTop = Math.abs(currentClose - gap.top);
-        let dBot = Math.abs(currentClose - gap.bottom);
-        
-        let closestPoint = dTop < dBot ? gap.top : gap.bottom;
-        let farthestPoint = dTop > dBot ? gap.top : gap.bottom;
-        
-        let distClosestPct = (Math.abs(currentClose - closestPoint) / currentClose) * 100;
-        let distFarthestPct = (Math.abs(currentClose - farthestPoint) / currentClose) * 100;
-        let widthPct = (Math.abs(gap.top - gap.bottom) / ((gap.top + gap.bottom) / 2)) * 100;
-        
+        const closest_point = gap.type === 'Bullish' ? gap.top : gap.bottom;
+        const farthest_point = gap.type === 'Bullish' ? gap.bottom : gap.top;
+        const dist_closest_pct = Math.abs((currentPrice - closest_point) / currentPrice) * 100;
+        const dist_farthest_pct = Math.abs((currentPrice - farthest_point) / currentPrice) * 100;
+        const width_pct = Math.abs((gap.top - gap.bottom) / gap.bottom) * 100;
+
         return {
-            ticker: gap.ticker,
-            type: gap.type,
-            date: gap.date,
-            currentClose: currentClose,
-            closestPoint: closestPoint,
-            farthestPoint: farthestPoint,
-            distClosestPct: distClosestPct,
-            distFarthestPct: distFarthestPct,
-            widthPct: widthPct
+            ...gap,
+            closest_point,
+            farthest_point,
+            dist_closest_pct,
+            dist_farthest_pct,
+            width_pct,
+            current_close: currentPrice,
+            analysis_date: analysisDate
         };
     });
 }

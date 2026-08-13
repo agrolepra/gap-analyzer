@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { GapTable, GapData } from '../organisms/GapTable/GapTable';
+import { GapTable, type GapData } from '../organisms/GapTable/GapTable';
 import { Button } from '../atoms/Button';
+import { useAuth } from '../../context/AuthContext';
 import styles from './HistoryPage.module.css';
 
 interface HistoryRecord extends GapData {
@@ -9,6 +10,7 @@ interface HistoryRecord extends GapData {
 }
 
 export const HistoryPage: React.FC = () => {
+  const { authFetch } = useAuth();
   const [history, setHistory] = useState<HistoryRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -17,15 +19,19 @@ export const HistoryPage: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('http://localhost:8787/api/history');
+      const res = await authFetch('https://gap-analyzer-worker.agrolepra.workers.dev/history');
+      if (res.status === 401) {
+        throw new Error('Sesión expirada. Por favor, volvé a iniciar sesión.');
+      }
       if (!res.ok) {
-        throw new Error('Error al obtener el historial. Asegúrate de que la base de datos D1 está vinculada.');
+        throw new Error('Error al obtener el historial.');
       }
       const data = await res.json();
       if (data.error) throw new Error(data.error);
 
       // Mapear desde el formato de DB al formato esperado por GapTable
-      const mapped = (data.history || []).map((row: any) => ({
+      const historyData = Array.isArray(data) ? data : (data.results || []);
+      const mapped = historyData.map((row: any) => ({
         id: row.id,
         ticker: row.ticker,
         type: row.type,
