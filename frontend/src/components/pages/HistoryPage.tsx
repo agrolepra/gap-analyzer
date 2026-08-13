@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { GapTable, type GapData } from '../organisms/GapTable/GapTable';
 import { Button } from '../atoms/Button';
 import { useAuth } from '../../context/AuthContext';
@@ -11,9 +11,23 @@ interface HistoryRecord extends GapData {
 
 export const HistoryPage: React.FC = () => {
   const { authFetch } = useAuth();
-  const [history, setHistory] = useState<HistoryRecord[]>([]);
+  const [allHistory, setAllHistory] = useState<HistoryRecord[]>([]);
+  const [dateFrom, setDateFrom] = useState<string>('2025-01-01');
+  const [dateTo, setDateTo] = useState<string>(new Date().toISOString().split('T')[0]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const filteredHistory = useMemo(() => {
+    if (!dateFrom || !dateTo) return allHistory;
+
+    const fromDate = new Date(dateFrom).getTime();
+    const toDate = new Date(dateTo).getTime();
+
+    return allHistory.filter(record => {
+      const recordDate = new Date(record.analysis_date).getTime();
+      return recordDate >= fromDate && recordDate <= toDate;
+    });
+  }, [allHistory, dateFrom, dateTo]);
 
   const loadHistory = async () => {
     setLoading(true);
@@ -29,7 +43,6 @@ export const HistoryPage: React.FC = () => {
       const data = await res.json();
       if (data.error) throw new Error(data.error);
 
-      // Mapear desde el formato de DB al formato esperado por GapTable
       const historyData = Array.isArray(data) ? data : (data.results || []);
       const mapped = historyData.map((row: any) => ({
         id: row.id,
@@ -44,8 +57,8 @@ export const HistoryPage: React.FC = () => {
         widthPct: row.width_pct,
         analysis_date: row.analysis_date
       }));
-      
-      setHistory(mapped);
+
+      setAllHistory(mapped);
     } catch (err: any) {
       setError(err.message || 'Error desconocido.');
     } finally {
@@ -69,13 +82,76 @@ export const HistoryPage: React.FC = () => {
         <p>Registro histórico de los últimos 100 gaps encontrados (guardados en Cloudflare D1).</p>
       </div>
 
+      <div className={`glass-panel ${styles.panel}`}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
+          <div>
+            <label style={{ display: 'block', fontSize: '14px', fontWeight: 500, marginBottom: '8px', color: 'var(--text-secondary)' }}>
+              Desde:
+            </label>
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '10px',
+                border: '1px solid rgba(99, 102, 241, 0.2)',
+                borderRadius: '8px',
+                backgroundColor: 'rgba(99, 102, 241, 0.05)',
+                color: 'var(--text-primary)',
+                fontFamily: 'inherit',
+                fontSize: '14px',
+              }}
+            />
+          </div>
+
+          <div>
+            <label style={{ display: 'block', fontSize: '14px', fontWeight: 500, marginBottom: '8px', color: 'var(--text-secondary)' }}>
+              Hasta:
+            </label>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '10px',
+                border: '1px solid rgba(99, 102, 241, 0.2)',
+                borderRadius: '8px',
+                backgroundColor: 'rgba(99, 102, 241, 0.05)',
+                color: 'var(--text-primary)',
+                fontFamily: 'inherit',
+                fontSize: '14px',
+              }}
+            />
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setDateFrom('2025-01-01');
+                setDateTo(new Date().toISOString().split('T')[0]);
+              }}
+              style={{ width: '100%' }}
+            >
+              Resetear Fechas
+            </Button>
+          </div>
+        </div>
+
+        <p style={{ margin: '12px 0 0', fontSize: '13px', color: 'var(--text-muted)' }}>
+          Mostrando {filteredHistory.length} de {allHistory.length} registros
+        </p>
+      </div>
+
       {error && <div className={styles.error}>{error}</div>}
 
       <div className={styles.resultsArea}>
         {loading ? (
           <div className={styles.loadingState}>Cargando historial desde la nube...</div>
         ) : (
-          <GapTable data={history} />
+          <GapTable data={filteredHistory} />
         )}
       </div>
     </div>
