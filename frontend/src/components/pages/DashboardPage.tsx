@@ -29,6 +29,18 @@ interface TickerRow {
   active: number;
 }
 
+interface GapStats {
+  originated: number;
+  closedFully: number;
+  remaining: number;
+  remainingTotal: number;
+  remainingPartial: number;
+  pctClosedFully: number;
+  pctRemaining: number;
+  pctRemainingTotal: number;
+  pctRemainingPartial: number;
+}
+
 const PIE_COLORS = ['#10b981', '#ef4444']; // Bullish, Bearish
 
 export const DashboardPage: React.FC = () => {
@@ -37,6 +49,7 @@ export const DashboardPage: React.FC = () => {
 
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [trendSummary, setTrendSummary] = useState<{ analysis_date: string; count: number }[]>([]);
+  const [gapStats, setGapStats] = useState<GapStats | null>(null);
   const [activeTickerCount, setActiveTickerCount] = useState<number>(0);
   const [aiSummary, setAiSummary] = useState<AiSummaryRow | null>(null);
   const [summaryHistory, setSummaryHistory] = useState<AiSummaryHistoryRow[]>([]);
@@ -50,13 +63,14 @@ export const DashboardPage: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const [historyRes, tickersRes, summaryRes, settingsRes, summaryHistoryRes, trendRes] = await Promise.all([
+      const [historyRes, tickersRes, summaryRes, settingsRes, summaryHistoryRes, trendRes, gapStatsRes] = await Promise.all([
         authFetch(`${WORKER}/history`),
         authFetch(`${WORKER}/tickers`),
         authFetch(`${WORKER}/ai-summary/latest`),
         authFetch(`${WORKER}/settings`),
         authFetch(`${WORKER}/ai-summary/history`),
         authFetch(`${WORKER}/history/summary`),
+        authFetch(`${WORKER}/gaps/stats`),
       ]);
 
       const tickersData = await tickersRes.json();
@@ -82,6 +96,9 @@ export const DashboardPage: React.FC = () => {
 
       const trendData = await trendRes.json();
       if (trendRes.ok) setTrendSummary(trendData.results || []);
+
+      const gapStatsData = await gapStatsRes.json();
+      if (gapStatsRes.ok) setGapStats(gapStatsData);
     } catch (err: any) {
       setError(err.message || 'Error desconocido al cargar el dashboard.');
     } finally {
@@ -177,6 +194,48 @@ export const DashboardPage: React.FC = () => {
               </span>
             </div>
           </div>
+
+          {gapStats && gapStats.originated > 0 && (
+            <div className={`glass-panel ${styles.lifecyclePanel}`}>
+              <h3 className={styles.chartTitle}>Gaps: originados vs. cubiertos (histórico)</h3>
+              <div className={styles.lifecycleBar}>
+                <div
+                  className={styles.lifecycleBarClosed}
+                  style={{ width: `${gapStats.pctClosedFully}%` }}
+                  title={`Cubiertos totalmente: ${gapStats.pctClosedFully}%`}
+                />
+                <div
+                  className={styles.lifecycleBarPartial}
+                  style={{ width: `${gapStats.pctRemainingPartial}%` }}
+                  title={`Restantes (parcial): ${gapStats.pctRemainingPartial}%`}
+                />
+                <div
+                  className={styles.lifecycleBarOpen}
+                  style={{ width: `${gapStats.pctRemainingTotal}%` }}
+                  title={`Restantes (sin cubrir): ${gapStats.pctRemainingTotal}%`}
+                />
+              </div>
+              <div className={styles.lifecycleStats}>
+                <div className={styles.lifecycleStat}>
+                  <span className={styles.kpiLabel}>Gaps Originados</span>
+                  <span className={styles.kpiValue}>{gapStats.originated}</span>
+                  <span className={styles.lifecycleSub}>100% del histórico</span>
+                </div>
+                <div className={styles.lifecycleStat}>
+                  <span className={styles.kpiLabel} style={{ color: 'var(--success)' }}>Cubiertos Totalmente</span>
+                  <span className={styles.kpiValue}>{gapStats.closedFully}</span>
+                  <span className={styles.lifecycleSub}>{gapStats.pctClosedFully}%</span>
+                </div>
+                <div className={styles.lifecycleStat}>
+                  <span className={styles.kpiLabel} style={{ color: '#f59e0b' }}>Restantes por Cubrir</span>
+                  <span className={styles.kpiValue}>{gapStats.remaining}</span>
+                  <span className={styles.lifecycleSub}>
+                    {gapStats.pctRemaining}% · sin tocar: {gapStats.remainingTotal} ({gapStats.pctRemainingTotal}%) · parcial: {gapStats.remainingPartial} ({gapStats.pctRemainingPartial}%)
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
 
           {currentGaps.length > 0 ? (
             <div className={styles.chartsGrid}>

@@ -1,4 +1,4 @@
-import { analyzeGaps } from './gapAnalyzer.js';
+import { analyzeGaps, computeGapLifecycle } from './gapAnalyzer.js';
 import { generateSummary } from './aiSummarizer.js';
 import { sendEmail, sendWhatsApp } from './notifications.js';
 
@@ -253,8 +253,13 @@ async function ensureDailySummary(env, targetDate, triggerType) {
 
     if (!env.GEMINI_API_KEY) return { row: null, wasCached: false };
 
+    // Solo tickers activos: uno desactivado puede conservar su última fila de
+    // gaps_history (nunca se borra, es historial), pero no debe aparecer en el
+    // resumen de un día en el que ya no se lo está siguiendo.
     const { results: gaps } = await env.DB.prepare(
-        "SELECT * FROM gaps_history WHERE analysis_date = ?"
+        `SELECT gh.* FROM gaps_history gh
+         JOIN tickers t ON t.ticker = gh.ticker
+         WHERE gh.analysis_date = ? AND t.active = 1`
     ).bind(targetDate).all();
     if (!gaps.length) return { row: null, wasCached: false };
 
@@ -713,6 +718,54 @@ export default {
                      LIMIT 30`
                 ).all();
                 return json({ results });
+            } catch (e) {
+                return json({ error: e.message }, 500);
+            }
+        }
+
+        // Ciclo de vida histórico de los gaps de todos los tickers activos: cuántos se
+        // originaron alguna vez, cuántos terminaron completamente cubiertos por precio
+        // posterior, y de los que siguen abiertos hoy, cuántos nunca se tocaron vs.
+        // cuántos están parcialmente erosionados. Usa el historial completo de cada
+        // ticker (no gaps_history, que solo guarda snapshots del set activo del día).
+        if (url.pathname === '/gaps/stats') {
+            try {
+                const activeTickers = await getActiveTickers(env);
+                let originated = 0, closedFully = 0, remainingTotal = 0, remainingPartial = 0;
+
+                for (const ticker of activeTickers) {
+                    const { results } = await env.DB.prepare(
+                        "SELECT date, high_price, low_price, close_price FROM daily_prices WHERE ticker = ? ORDER BY date ASC"
+                    ).bind(ticker).all();
+                    if (!results || results.length < 2) continue;
+
+                    const mapped = results.map(r => ({
+                        datetime: r.date,
+                        high: r.high_price,
+                        low: r.low_price,
+                        close: r.close_price,
+                    }));
+                    const stats = computeGapLifecycle(ticker, mapped);
+                    originated += stats.originated;
+                    closedFully += stats.closedFully;
+                    remainingTotal += stats.remainingTotal;
+                    remainingPartial += stats.remainingPartial;
+                }
+
+                const remaining = remainingTotal + remainingPartial;
+                const pct = (n) => (originated > 0 ? parseFloat(((n / originated) * 100).toFixed(1)) : 0);
+
+                return json({
+                    originated,
+                    closedFully,
+                    remaining,
+                    remainingTotal,
+                    remainingPartial,
+                    pctClosedFully: pct(closedFully),
+                    pctRemaining: pct(remaining),
+                    pctRemainingTotal: pct(remainingTotal),
+                    pctRemainingPartial: pct(remainingPartial),
+                });
             } catch (e) {
                 return json({ error: e.message }, 500);
             }
