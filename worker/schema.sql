@@ -78,6 +78,9 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT NOT NULL
 );
 
--- Evita filas duplicadas cuando se recalculan gaps varias veces el mismo día
+-- Evita filas duplicadas cuando se recalculan gaps varias veces el mismo día.
+-- Incluye closest_point porque un mismo gap_date puede producir dos tramos
+-- discontinuos (cuando una rueda cubre el medio de un gap y lo divide en dos) —
+-- sin closest_point en la clave, el segundo tramo pisaría al primero.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_gaps_unique
-    ON gaps_history(ticker, type, gap_date, analysis_date);
+    ON gaps_history(ticker, type, gap_date, analysis_date, closest_point);

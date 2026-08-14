@@ -1,4 +1,19 @@
 /**
+ * Descarta gaps cuyo rango [bottom, top] está totalmente contenido dentro de
+ * otro gap ya conservado. Procesa de mayor a menor ancho, así el más grande
+ * (el que engloba) siempre se evalúa primero y sobrevive.
+ */
+function removeContainedGaps(gaps) {
+    const sorted = [...gaps].sort((a, b) => (b.top - b.bottom) - (a.top - a.bottom));
+    const kept = [];
+    for (const gap of sorted) {
+        const isContained = kept.some(k => gap.bottom >= k.bottom && gap.top <= k.top);
+        if (!isContained) kept.push(gap);
+    }
+    return kept;
+}
+
+/**
  * Analiza el historial de precios para encontrar gaps no cubiertos.
  * @param {string} ticker - Símbolo de la acción.
  * @param {Array} data - Array de objetos { datetime, open, high, low, close } ORDENADOS de más antiguo a más reciente.
@@ -67,6 +82,14 @@ export function analyzeGaps(ticker, data) {
         }
     }
     
+    // Eliminar gaps que quedaron totalmente contenidos dentro de otro gap más
+    // grande (aunque sean de origen o tipo distinto — dos gaps activos pueden
+    // solaparse porque cada uno se crea comparando solo contra el día previo,
+    // nunca entre sí). Si el precio vuelve a esa zona, cubre ambos a la vez, así
+    // que el más chico no aporta información nueva: se descarta y queda solo el
+    // que engloba el rango completo.
+    activeGaps = removeContainedGaps(activeGaps);
+
     // Procesar los gaps activos finales para añadir métricas adicionales
     const currentPrice = parseFloat(data[data.length - 1].close);
     const analysisDate = data[data.length - 1].datetime;
