@@ -1,5 +1,5 @@
-export async function generateSummary(gaps, openAiKey) {
-    if (!openAiKey) {
+export async function generateSummary(gaps, geminiKey) {
+    if (!geminiKey) {
         return null;
     }
 
@@ -13,29 +13,26 @@ ${JSON.stringify(gaps.slice(0, 15), null, 2)}
 Respondé en español, en 3-5 párrafos como máximo. Empezá con el panorama general y terminá con recomendaciones de seguimiento.`;
 
     try {
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${openAiKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                model: 'gpt-4o-mini',
-                max_tokens: 1024,
-                messages: [
-                    { role: 'user', content: prompt }
-                ]
-            })
-        });
+        const response = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    contents: [{ parts: [{ text: prompt }] }],
+                    generationConfig: { maxOutputTokens: 1024 },
+                }),
+            }
+        );
 
         if (!response.ok) {
             const errorText = await response.text();
-            console.error("Error from OpenAI API:", errorText);
+            console.error("Error from Gemini API:", errorText);
             return null;
         }
 
         const data = await response.json();
-        return data.choices?.[0]?.message?.content || null;
+        return data.candidates?.[0]?.content?.parts?.[0]?.text || null;
     } catch (e) {
         console.error("Exception generating AI summary:", e);
         return null;

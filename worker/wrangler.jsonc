@@ -22,7 +22,7 @@
 	/**
 	 * Secrets necesarios (usar: npx wrangler secret put <NOMBRE>):
 	 * - TWELVEDATA_API_KEY
-	 * - OPENAI_API_KEY (resumen de IA, automático y manual)
+	 * - GEMINI_API_KEY (resumen de IA, automático y manual — free tier de Google AI Studio)
 	 * - RESEND_API_KEY
 	 * - EMAIL_TO
 	 * - WHATSAPP_PHONE

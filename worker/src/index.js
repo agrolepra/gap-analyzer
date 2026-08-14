@@ -252,8 +252,8 @@ async function runJob(job, env, ctx) {
             const gapsCamel = gapsToCamel(gaps);
 
             let aiSummary = null;
-            if (env.OPENAI_API_KEY && gaps.length > 0) {
-                aiSummary = await generateSummary(gapsCamel, env.OPENAI_API_KEY);
+            if (env.GEMINI_API_KEY && gaps.length > 0) {
+                aiSummary = await generateSummary(gapsCamel, env.GEMINI_API_KEY);
                 if (aiSummary) {
                     await env.DB.prepare(
                         "INSERT INTO ai_summaries (summary, gaps_count, trigger_type) VALUES (?, ?, 'auto')"
@@ -362,8 +362,8 @@ export default {
             try {
                 let overrideKey = null;
                 try { const body = await request.json(); if (body?.aiKey) overrideKey = body.aiKey; } catch (_) {}
-                const openAiKey = overrideKey || env.OPENAI_API_KEY;
-                if (!openAiKey) return json({ error: 'No hay clave de OpenAI configurada' }, 400);
+                const geminiKey = overrideKey || env.GEMINI_API_KEY;
+                if (!geminiKey) return json({ error: 'No hay clave de Gemini configurada' }, 400);
 
                 const { results: recentGaps } = await env.DB.prepare(
                     "SELECT * FROM gaps_history WHERE analysis_date = (SELECT MAX(analysis_date) FROM gaps_history)"
@@ -373,7 +373,7 @@ export default {
                 }
 
                 const gapsCamel = gapsToCamel(recentGaps);
-                const summary = await generateSummary(gapsCamel, openAiKey);
+                const summary = await generateSummary(gapsCamel, geminiKey);
                 if (!summary) return json({ error: 'No se pudo generar el resumen' }, 500);
 
                 await env.DB.prepare(

@@ -4,17 +4,11 @@ import { Sparkles } from 'lucide-react';
 import { Button } from '../atoms/Button';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
+import { getLatestGapsPerTicker, type HistoryRow } from '../../utils/latestGaps';
 import styles from './DashboardPage.module.css';
 
 const WORKER = 'https://gap-analyzer-worker.agrolepra.workers.dev';
 const NEAR_THRESHOLD = 7;
-
-interface HistoryRow {
-  ticker: string;
-  type: 'Bullish' | 'Bearish';
-  dist_closest_pct: number;
-  analysis_date: string;
-}
 
 interface AiSummaryRow {
   summary: string;
@@ -72,15 +66,12 @@ export const DashboardPage: React.FC = () => {
 
   useEffect(() => { loadData(); }, []);
 
-  const latestAnalysisDate = useMemo(() => {
-    if (history.length === 0) return null;
-    return history.reduce((max, r) => (r.analysis_date > max ? r.analysis_date : max), history[0].analysis_date);
-  }, [history]);
+  const currentGaps = useMemo(() => getLatestGapsPerTicker(history), [history]);
 
-  const currentGaps = useMemo(
-    () => history.filter(r => r.analysis_date === latestAnalysisDate),
-    [history, latestAnalysisDate]
-  );
+  const latestAnalysisDate = useMemo(() => {
+    if (currentGaps.length === 0) return null;
+    return currentGaps.reduce((max, r) => (r.analysis_date > max ? r.analysis_date : max), currentGaps[0].analysis_date);
+  }, [currentGaps]);
 
   const nearGapsCount = useMemo(
     () => currentGaps.filter(r => r.dist_closest_pct <= NEAR_THRESHOLD).length,

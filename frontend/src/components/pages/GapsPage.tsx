@@ -6,6 +6,7 @@ import { GapTable, type GapData } from '../organisms/GapTable/GapTable';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { styleHeaderRow, autoFitColumns, distColorArgb, downloadWorkbook, formatDateDDMMYYYY, SUCCESS_ARGB, DANGER_ARGB } from '../../utils/excelStyle';
+import { getLatestGapsPerTicker, historyRowToGapData, type HistoryRow } from '../../utils/latestGaps';
 import styles from './GapsPage.module.css';
 
 const WORKER = 'https://gap-analyzer-worker.agrolepra.workers.dev';
@@ -19,14 +20,41 @@ export const GapsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('all');
   const [allGaps, setAllGaps] = useState<GapData[]>([]);
   const [loading, setLoading] = useState(true);
+  const [recalculating, setRecalculating] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
 
   const nearGaps = allGaps.filter(g => g.distClosestPct <= NEAR_THRESHOLD);
 
-  const recalculate = async (isManual: boolean) => {
+  // Carga instantánea: lee el último snapshot ya calculado (por el cron diario o un
+  // recálculo manual previo) en vez de recomputar gaps en cada visita a la página.
+  const loadLatest = async () => {
     setLoading(true);
+    setError(null);
+    try {
+      const res = await authFetch(`${WORKER}/history`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Error al cargar los gaps');
+      const rows: HistoryRow[] = data.results || [];
+      const latest = getLatestGapsPerTicker(rows);
+      setAllGaps(latest.map(historyRowToGapData));
+      if (latest.length > 0) {
+        setLastUpdated(latest.reduce((max, r) => (r.analysis_date > max ? r.analysis_date : max), latest[0].analysis_date));
+      }
+    } catch (err: any) {
+      setError(err.message || 'Error desconocido al cargar los gaps.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Recalcula sobre los datos ya guardados en D1 (sin llamar a la API externa) y persiste
+  // el resultado. Útil justo después de agregar/reactivar un ticker, sin esperar al
+  // próximo ciclo automático — en el uso normal no hace falta, los datos ya se actualizan
+  // solos después del cierre de mercado.
+  const recalculate = async () => {
+    setRecalculating(true);
     setError(null);
     try {
       const res = await authFetch(`${WORKER}/analyze`, { method: 'POST' });
@@ -34,15 +62,15 @@ export const GapsPage: React.FC = () => {
       if (!res.ok) throw new Error(data.error || 'Error al recalcular gaps');
       setAllGaps(data.gaps || []);
       setLastUpdated(new Date().toISOString());
-      if (isManual) showToast('Gaps recalculados', 'success');
+      showToast('Gaps recalculados', 'success');
     } catch (err: any) {
       setError(err.message || 'Error desconocido al recalcular gaps.');
     } finally {
-      setLoading(false);
+      setRecalculating(false);
     }
   };
 
-  useEffect(() => { recalculate(false); }, []);
+  useEffect(() => { loadLatest(); }, []);
 
   const buildSheet = (workbook: ExcelJS.Workbook, name: string, data: GapData[]) => {
     const sheet = workbook.addWorksheet(name);
@@ -107,7 +135,12 @@ export const GapsPage: React.FC = () => {
         <div className={styles.titleRow}>
           <h1 className="text-gradient">Gaps</h1>
           <div style={{ display: 'flex', gap: '12px' }}>
-            <Button variant="secondary" onClick={() => recalculate(true)} isLoading={loading}>
+            <Button
+              variant="secondary"
+              onClick={recalculate}
+              isLoading={recalculating}
+              title="Fuerza un recálculo inmediato sobre los datos ya guardados. No hace falta en el uso normal: se actualiza solo después de cada cierre de mercado."
+            >
               Recalcular
             </Button>
             <Button variant="primary" onClick={downloadExcel} isLoading={downloading} disabled={allGaps.length === 0}>
@@ -119,7 +152,7 @@ export const GapsPage: React.FC = () => {
         <p>Gaps de precio no cubiertos, calculados sobre los datos ya guardados (sin consultar la API externa).</p>
         {lastUpdated && (
           <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '8px' }}>
-            Último cálculo: {new Date(lastUpdated).toLocaleString()}
+            Último análisis: {new Date(lastUpdated).toLocaleDateString()}
           </p>
         )}
       </div>

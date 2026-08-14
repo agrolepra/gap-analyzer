@@ -9,7 +9,24 @@ import { useToast } from '../../context/ToastContext';
 import styles from './ConfigPage.module.css';
 
 const WORKER = 'https://gap-analyzer-worker.agrolepra.workers.dev';
-const DEFAULT_UPDATE_HOUR = '21:30';
+
+// Buenos Aires es UTC-3 todo el año (Argentina no tiene horario de verano).
+const BA_OFFSET_HOURS = 3;
+const DEFAULT_UPDATE_HOUR_BA = '18:30';
+
+function utcToBA(utcHHMM: string): string {
+  const [h, m] = utcHHMM.split(':').map(Number);
+  let baH = h - BA_OFFSET_HOURS;
+  if (baH < 0) baH += 24;
+  return `${String(baH).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+function baToUTC(baHHMM: string): string {
+  const [h, m] = baHHMM.split(':').map(Number);
+  let utcH = h + BA_OFFSET_HOURS;
+  if (utcH >= 24) utcH -= 24;
+  return `${String(utcH).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
 
 interface TickerRow {
   ticker: string;
@@ -26,7 +43,7 @@ export const ConfigPage: React.FC = () => {
   const [addingTicker, setAddingTicker] = useState(false);
   const [togglingTicker, setTogglingTicker] = useState<string | null>(null);
 
-  const [updateHour, setUpdateHour] = useState(DEFAULT_UPDATE_HOUR);
+  const [updateHourBA, setUpdateHourBA] = useState(DEFAULT_UPDATE_HOUR_BA);
   const [savingHour, setSavingHour] = useState(false);
 
   const [loading, setLoading] = useState(true);
@@ -46,7 +63,7 @@ export const ConfigPage: React.FC = () => {
 
       const settingsData = await settingsRes.json();
       if (settingsRes.ok && settingsData.settings?.update_hour_utc) {
-        setUpdateHour(settingsData.settings.update_hour_utc);
+        setUpdateHourBA(utcToBA(settingsData.settings.update_hour_utc));
       }
     } catch (err: any) {
       setError(err.message || 'Error desconocido al cargar la configuración.');
@@ -116,7 +133,7 @@ export const ConfigPage: React.FC = () => {
       const res = await authFetch(`${WORKER}/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: 'update_hour_utc', value: updateHour }),
+        body: JSON.stringify({ key: 'update_hour_utc', value: baToUTC(updateHourBA) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Error al guardar la hora');
@@ -180,13 +197,13 @@ export const ConfigPage: React.FC = () => {
       <div className={`glass-panel ${styles.panel}`}>
         <h2 className={styles.sectionTitle}>Actualización Automática</h2>
         <FormField
-          label="Hora de actualización (UTC)"
-          description="El cierre de NYSE ronda 20:00–21:00 UTC según horario de verano. Por defecto se corre unos minutos después."
+          label="Hora de actualización (Buenos Aires)"
+          description="El cierre de NYSE en horario de Buenos Aires es ~17:00 (horario de verano en EE.UU., marzo–noviembre) o ~18:00 (resto del año). Por defecto se corre unos minutos después del más tardío para cubrir ambos casos; ajustá si querés más precisión."
         >
           <Input
             type="time"
-            value={updateHour}
-            onChange={(e) => setUpdateHour(e.target.value)}
+            value={updateHourBA}
+            onChange={(e) => setUpdateHourBA(e.target.value)}
             style={{ maxWidth: '160px' }}
           />
         </FormField>
