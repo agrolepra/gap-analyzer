@@ -62,6 +62,24 @@ async function fetchBatch(tickerChunk, twelvedataKey, outputsize = 30) {
     return data;
 }
 
+// Valida que un ticker exista realmente en TwelveData antes de darlo de alta.
+// Solo bloquea ante una respuesta explícita de error (símbolo inexistente o no
+// disponible en el plan) — si la validación misma falla por un problema de red,
+// no se le echa la culpa al ticker: se deja pasar y el backfill posterior es
+// quien determina si realmente hay datos.
+async function tickerExistsOnTwelveData(ticker, twelvedataKey) {
+    try {
+        const data = await fetchBatch([ticker], twelvedataKey, 1);
+        const tickerData = data[ticker];
+        if (!tickerData) return true; // respuesta rara pero no un error explícito: no bloquear
+        if (tickerData.status === 'error') return false;
+        return true;
+    } catch (e) {
+        console.error('Error validando ticker en TwelveData:', e);
+        return true;
+    }
+}
+
 const BATCH_SIZE = 8; // máx 8 symbols por request en plan gratuito
 
 // Procesa UN SOLO batch (hasta 8 tickers) de un job y avanza su progreso.
@@ -322,11 +340,12 @@ async function runJob(job, env, ctx) {
         return;
     }
 
-    // Job recién terminado: si hay otro en cola, arrancarlo (primer batch, inmediato)
-    const next = await getNextQueuedJob(env);
-    if (next) {
-        ctx.waitUntil(runJob(next, env, ctx));
-    }
+    // A propósito NO se encadena automáticamente al siguiente job en cola acá.
+    // Si varios jobs de 1 batch se encadenaran sin pausa (ej. varias altas de
+    // tickers casi simultáneas), dispararían llamadas a TwelveData pegadas una
+    // detrás de otra sin respetar el límite de 8 req/min — esto ya pasó y dejó
+    // tickers válidos sin datos. El cron (cada 1 min) es el único que arranca el
+    // siguiente job en cola, dándole a cada job su propio minuto.
 }
 
 // Reactiva un ticker inactivo y encola un backfill de "catch-up" (solo lo que falta desde el último dato guardado).
@@ -460,6 +479,10 @@ export default {
 
                 let status;
                 if (!existing) {
+                    const isValid = await tickerExistsOnTwelveData(ticker, env.TWELVEDATA_API_KEY);
+                    if (!isValid) {
+                        return json({ error: `${ticker} no existe o no está disponible en TwelveData` }, 400);
+                    }
                     await env.DB.prepare("INSERT INTO tickers (ticker, active) VALUES (?, 1)").bind(ticker).run();
                     await enqueueJob(env, { type: 'backfill', tickers: [ticker], from_date: '2025-01-01', to_date: todayStr() });
                     await logAudit(env.DB, 'Ticker agregado', ticker);

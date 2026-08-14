@@ -128,19 +128,27 @@ export const ConfigPage: React.FC = () => {
     setError(null);
     let created = 0, reactivated = 0, alreadyActive = 0, failed = 0;
     try {
-      const results = await Promise.allSettled(parsed.map(submitTicker));
-      for (const r of results) {
-        if (r.status === 'rejected') { failed++; continue; }
-        if (r.value.status === 'created') created++;
-        else if (r.value.status === 'reactivated') reactivated++;
-        else alreadyActive++;
+      // Secuencial, no en paralelo: cada alta nueva valida el ticker contra
+      // TwelveData, y esas llamadas comparten el mismo límite de 8 req/min que
+      // usa el resto del sistema (ingesta diaria, backfills). Mandarlas todas
+      // juntas las haría chocar entre sí.
+      for (const ticker of parsed) {
+        try {
+          const data = await submitTicker(ticker);
+          if (data.status === 'created') created++;
+          else if (data.status === 'reactivated') reactivated++;
+          else alreadyActive++;
+        } catch {
+          failed++;
+        }
+        await new Promise(r => setTimeout(r, 2000));
       }
 
       const parts = [];
       if (created > 0) parts.push(`${created} agregados`);
       if (reactivated > 0) parts.push(`${reactivated} reactivados`);
       if (alreadyActive > 0) parts.push(`${alreadyActive} ya activos`);
-      if (failed > 0) parts.push(`${failed} con error`);
+      if (failed > 0) parts.push(`${failed} inválidos o con error`);
       showToast(`Importación: ${parts.join(', ')}`, failed > 0 ? 'error' : 'success');
 
       setBulkText('');
