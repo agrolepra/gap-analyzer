@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts';
-import { Sparkles } from 'lucide-react';
+import { Sparkles, CheckCircle2 } from 'lucide-react';
 import { Button } from '../atoms/Button';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
@@ -32,6 +32,7 @@ export const DashboardPage: React.FC = () => {
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [activeTickerCount, setActiveTickerCount] = useState<number>(0);
   const [aiSummary, setAiSummary] = useState<AiSummaryRow | null>(null);
+  const [lastCompletedMarketDate, setLastCompletedMarketDate] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [generatingSummary, setGeneratingSummary] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -40,10 +41,11 @@ export const DashboardPage: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const [historyRes, tickersRes, summaryRes] = await Promise.all([
+      const [historyRes, tickersRes, summaryRes, settingsRes] = await Promise.all([
         authFetch(`${WORKER}/history`),
         authFetch(`${WORKER}/tickers`),
         authFetch(`${WORKER}/ai-summary/latest`),
+        authFetch(`${WORKER}/settings`),
       ]);
 
       const historyData = await historyRes.json();
@@ -58,6 +60,9 @@ export const DashboardPage: React.FC = () => {
 
       const summaryData = await summaryRes.json();
       if (summaryRes.ok) setAiSummary(summaryData.summary || null);
+
+      const settingsData = await settingsRes.json();
+      if (settingsRes.ok) setLastCompletedMarketDate(settingsData.settings?.last_completed_market_date || null);
     } catch (err: any) {
       setError(err.message || 'Error desconocido al cargar el dashboard.');
     } finally {
@@ -98,6 +103,11 @@ export const DashboardPage: React.FC = () => {
       .slice(-14)
       .map(([date, count]) => ({ date: date.slice(5), gaps: count }));
   }, [history]);
+
+  // Ya hay un resumen para el último cierre de mercado conocido: no hace falta (ni se debe)
+  // generar otro hasta que cierre la próxima jornada. Si todavía no cerró ningún mercado
+  // (deploy nuevo) tampoco hay nada para generar todavía.
+  const needsGeneration = !!lastCompletedMarketDate && aiSummary?.summary_date !== lastCompletedMarketDate;
 
   const generateSummary = async () => {
     setGeneratingSummary(true);
@@ -196,8 +206,21 @@ export const DashboardPage: React.FC = () => {
                 <Sparkles size={18} color="#a5b4fc" />
                 <h3>Resumen de IA</h3>
               </div>
-              <Button variant="secondary" onClick={generateSummary} isLoading={generatingSummary}>
-                Generar resumen IA
+              <Button
+                variant="secondary"
+                onClick={generateSummary}
+                isLoading={generatingSummary}
+                disabled={!needsGeneration}
+                title={needsGeneration
+                  ? 'Genera el resumen del último cierre de mercado'
+                  : 'Ya está generado el resumen del último cierre. El próximo se genera solo después del cierre de hoy.'}
+              >
+                {needsGeneration ? 'Generar resumen IA' : (
+                  <>
+                    <CheckCircle2 size={16} style={{ marginRight: '6px', verticalAlign: '-3px' }} />
+                    Resumen del día generado
+                  </>
+                )}
               </Button>
             </div>
             {aiSummary ? (
