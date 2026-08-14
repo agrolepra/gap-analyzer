@@ -120,8 +120,16 @@ export function analyzeGaps(ticker, data) {
     const analysisDate = data[data.length - 1].datetime;
 
     return survivors.map(gap => {
-        const closest_point = gap.type === 'Bullish' ? gap.top : gap.bottom;
-        const farthest_point = gap.type === 'Bullish' ? gap.bottom : gap.top;
+        // El punto más cercano/lejano es el que está literalmente más cerca/lejos
+        // del precio actual — no se puede asumir por el tipo de gap (alcista=top,
+        // bajista=bottom), porque si el precio cruzó de vuelta al otro lado del
+        // gap (algo común en gaps viejos donde la acción revirtió de tendencia),
+        // esa regla fija queda invertida: el borde "equivocado" termina siendo el
+        // realmente más cercano.
+        const distToTop = Math.abs(currentPrice - gap.top);
+        const distToBottom = Math.abs(currentPrice - gap.bottom);
+        const closest_point = distToTop <= distToBottom ? gap.top : gap.bottom;
+        const farthest_point = distToTop <= distToBottom ? gap.bottom : gap.top;
         const dist_closest_pct = Math.abs((currentPrice - closest_point) / currentPrice) * 100;
         const dist_farthest_pct = Math.abs((currentPrice - farthest_point) / currentPrice) * 100;
         const width_pct = Math.abs((gap.top - gap.bottom) / gap.bottom) * 100;
