@@ -9,7 +9,7 @@
 	},
 	"triggers": {
 		"crons": [
-			"0 18 * * 1-5"
+			"*/5 * * * *"
 		]
 	},
 	"d1_databases": [
@@ -22,11 +22,13 @@
 	/**
 	 * Secrets necesarios (usar: npx wrangler secret put <NOMBRE>):
 	 * - TWELVEDATA_API_KEY
-	 * - ANTHROPIC_API_KEY
+	 * - OPENAI_API_KEY (resumen de IA, automático y manual)
 	 * - RESEND_API_KEY
 	 * - EMAIL_TO
 	 * - WHATSAPP_PHONE
 	 * - WHATSAPP_API_KEY
-	 * - TICKERS (ej: "AAPL,MSFT,TSLA")
+	 *
+	 * La lista de tickers y la hora de actualización diaria ahora se gestionan
+	 * desde la app (Configuración), guardadas en D1 (tablas tickers/app_settings).
 	 */
 }

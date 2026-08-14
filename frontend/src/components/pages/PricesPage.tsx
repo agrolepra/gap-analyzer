@@ -1,13 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 import { Download } from 'lucide-react';
 import { PricesTable, type PriceData } from '../organisms/PricesTable/PricesTable';
 import { Button } from '../atoms/Button';
 import { useAuth } from '../../context/AuthContext';
+import { useToast } from '../../context/ToastContext';
+import { styleHeaderRow, autoFitColumns, downloadWorkbook, SUCCESS_ARGB, DANGER_ARGB } from '../../utils/excelStyle';
 import styles from './PricesPage.module.css';
+
+const WORKER = 'https://gap-analyzer-worker.agrolepra.workers.dev';
 
 export const PricesPage: React.FC = () => {
   const { authFetch } = useAuth();
+  const { showToast } = useToast();
   const [prices, setPrices] = useState<PriceData[]>([]);
   const [tickers, setTickers] = useState<string[]>([]);
   const [selectedTicker, setSelectedTicker] = useState<string>('');
@@ -17,13 +22,14 @@ export const PricesPage: React.FC = () => {
 
   const loadTickers = async () => {
     try {
-      const res = await authFetch('https://gap-analyzer-worker.agrolepra.workers.dev/prices');
+      const res = await authFetch(`${WORKER}/tickers`);
       if (res.ok) {
         const data = await res.json();
-        if (data.tickers && data.tickers.length > 0) {
-          setTickers(data.tickers);
-          setSelectedTicker(data.tickers[0]);
-        }
+        const active: string[] = (data.tickers || [])
+          .filter((t: { active: number }) => t.active === 1)
+          .map((t: { ticker: string }) => t.ticker);
+        setTickers(active);
+        setSelectedTicker(active[0] || '');
       }
     } catch (err) {
       console.error("Error loading tickers:", err);
@@ -31,11 +37,11 @@ export const PricesPage: React.FC = () => {
   };
 
   const loadPrices = async (ticker: string) => {
-    if (!ticker) return;
+    if (!ticker) { setPrices([]); setLoading(false); return; }
     setLoading(true);
     setError(null);
     try {
-      const res = await authFetch(`https://gap-analyzer-worker.agrolepra.workers.dev/prices?ticker=${ticker}`);
+      const res = await authFetch(`${WORKER}/prices?ticker=${ticker}`);
       if (!res.ok) {
         throw new Error('Error al obtener las cotizaciones.');
       }
@@ -51,41 +57,56 @@ export const PricesPage: React.FC = () => {
   };
 
   const downloadExcel = async () => {
+    if (tickers.length === 0) return;
     setDownloading(true);
     setError(null);
     try {
-      const workbook = XLSX.utils.book_new();
+      const workbook = new ExcelJS.Workbook();
 
       for (const ticker of tickers) {
-        const res = await authFetch(`https://gap-analyzer-worker.agrolepra.workers.dev/prices?ticker=${ticker}`);
+        const res = await authFetch(`${WORKER}/prices?ticker=${ticker}`);
         if (!res.ok) continue;
 
         const data = await res.json();
-        const tickerData = (data.results || []).map((row: any) => ({
-          Fecha: row.date,
-          Apertura: row.open_price,
-          Máximo: row.high_price,
-          Mínimo: row.low_price,
-          Cierre: row.close_price,
-          Volumen: row.volume,
-        }));
+        const rows = data.results || [];
+        if (rows.length === 0) continue;
 
-        if (tickerData.length > 0) {
-          const worksheet = XLSX.utils.json_to_sheet(tickerData);
-          worksheet['!cols'] = [
-            { wch: 12 },
-            { wch: 12 },
-            { wch: 12 },
-            { wch: 12 },
-            { wch: 12 },
-            { wch: 15 },
-          ];
-          XLSX.utils.book_append_sheet(workbook, worksheet, ticker);
-        }
+        const sheet = workbook.addWorksheet(ticker);
+        sheet.columns = [
+          { header: 'Fecha', key: 'date', width: 12 },
+          { header: 'Apertura', key: 'open', width: 12 },
+          { header: 'Máximo', key: 'high', width: 12 },
+          { header: 'Mínimo', key: 'low', width: 12 },
+          { header: 'Cierre', key: 'close', width: 12 },
+          { header: 'Volumen', key: 'volume', width: 14 },
+          { header: 'Var. %', key: 'varPct', width: 10 },
+        ];
+
+        rows.forEach((row: any, idx: number) => {
+          const prevClose = rows[idx + 1]?.close_price;
+          const varPct = prevClose ? ((row.close_price - prevClose) / prevClose) * 100 : null;
+
+          const excelRow = sheet.addRow({
+            date: row.date,
+            open: row.open_price,
+            high: row.high_price,
+            low: row.low_price,
+            close: row.close_price,
+            volume: row.volume,
+            varPct: varPct != null ? parseFloat(varPct.toFixed(2)) : null,
+          });
+
+          if (varPct != null) {
+            excelRow.getCell('varPct').font = { color: { argb: varPct >= 0 ? SUCCESS_ARGB : DANGER_ARGB }, bold: true };
+          }
+        });
+
+        styleHeaderRow(sheet);
+        autoFitColumns(sheet);
       }
 
-      const fileName = `cotizaciones_${new Date().toISOString().split('T')[0]}.xlsx`;
-      XLSX.writeFile(workbook, fileName);
+      await downloadWorkbook(workbook, `cotizaciones_${new Date().toISOString().split('T')[0]}.xlsx`);
+      showToast('Excel descargado', 'success');
     } catch (err: any) {
       setError('Error al descargar el Excel: ' + (err.message || 'Error desconocido'));
     } finally {
@@ -98,9 +119,7 @@ export const PricesPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (selectedTicker) {
-      loadPrices(selectedTicker);
-    }
+    loadPrices(selectedTicker);
   }, [selectedTicker]);
 
   return (
@@ -120,6 +139,7 @@ export const PricesPage: React.FC = () => {
               variant="primary"
               onClick={downloadExcel}
               isLoading={downloading}
+              disabled={tickers.length === 0}
               title="Descargar todas las cotizaciones en Excel"
             >
               <Download size={16} style={{ marginRight: '8px' }} />
@@ -138,7 +158,7 @@ export const PricesPage: React.FC = () => {
             value={selectedTicker}
             onChange={(e) => setSelectedTicker(e.target.value)}
           >
-            {tickers.length === 0 && <option value="">Sin datos...</option>}
+            {tickers.length === 0 && <option value="">Sin tickers activos...</option>}
             {tickers.map(t => (
               <option key={t} value={t}>{t}</option>
             ))}

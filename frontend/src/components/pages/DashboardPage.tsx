@@ -1,219 +1,226 @@
-import React, { useState, useEffect } from 'react';
-import * as XLSX from 'xlsx';
+import React, { useEffect, useMemo, useState } from 'react';
+import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { Sparkles } from 'lucide-react';
 import { Button } from '../atoms/Button';
-import { FormField } from '../molecules/FormField';
-import { TickerChips } from '../atoms/TickerChips/TickerChips';
-import { GapTable, type GapData } from '../organisms/GapTable/GapTable';
 import { useAuth } from '../../context/AuthContext';
+import { useToast } from '../../context/ToastContext';
 import styles from './DashboardPage.module.css';
+
+const WORKER = 'https://gap-analyzer-worker.agrolepra.workers.dev';
+const NEAR_THRESHOLD = 7;
+
+interface HistoryRow {
+  ticker: string;
+  type: 'Bullish' | 'Bearish';
+  dist_closest_pct: number;
+  analysis_date: string;
+}
+
+interface AiSummaryRow {
+  summary: string;
+  gaps_count: number;
+  trigger_type: 'manual' | 'auto';
+  generated_at: string;
+}
+
+interface TickerRow {
+  ticker: string;
+  active: number;
+}
+
+const PIE_COLORS = ['#10b981', '#ef4444']; // Bullish, Bearish
 
 export const DashboardPage: React.FC = () => {
   const { authFetch } = useAuth();
-  const [tickers, setTickers] = useState<string[]>([]);
-  const [loading, setLoading] = useState(false);
+  const { showToast } = useToast();
+
+  const [history, setHistory] = useState<HistoryRow[]>([]);
+  const [activeTickerCount, setActiveTickerCount] = useState<number>(0);
+  const [aiSummary, setAiSummary] = useState<AiSummaryRow | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [generatingSummary, setGeneratingSummary] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
-  const [allGaps, setAllGaps] = useState<GapData[]>([]);
-  const [filteredGaps, setFilteredGaps] = useState<GapData[]>([]);
-  const [lastAnalysis, setLastAnalysis] = useState<string | null>(null);
-  const [aiSummary, setAiSummary] = useState<string | null>(null);
 
-  // Cargar lista persistente de tickers y último análisis
-  useEffect(() => {
-    const savedTickers = localStorage.getItem('dashboardTickers');
-    if (savedTickers) {
-      try {
-        setTickers(JSON.parse(savedTickers));
-      } catch (e) {
-        console.error('Error cargando dashboardTickers', e);
-      }
-    }
-
-    const savedState = localStorage.getItem('dashboardState');
-    if (savedState) {
-      try {
-        const parsed = JSON.parse(savedState);
-        if (parsed.allGaps) setAllGaps(parsed.allGaps);
-        if (parsed.filteredGaps) setFilteredGaps(parsed.filteredGaps);
-        if (parsed.timestamp) setLastAnalysis(parsed.timestamp);
-        if (parsed.aiSummary) setAiSummary(parsed.aiSummary);
-      } catch (e) {
-        console.error('Error restaurando dashboardState', e);
-      }
-    }
-  }, []);
-
-  const handleTickersChange = (newTickers: string[]) => {
-    setTickers(newTickers);
-    localStorage.setItem('dashboardTickers', JSON.stringify(newTickers));
-  };
-
-  const handleAnalyze = async () => {
-    setError(null);
-    
-    if (tickers.length === 0) {
-      setError('Por favor, agrega al menos un ticker.');
-      return;
-    }
-
-    const savedConfig = localStorage.getItem('gapAnalyzerConfig');
-    if (!savedConfig) {
-      setError('No hay API Key configurada. Ve a Configuración primero.');
-      return;
-    }
-    
-    let apiKey = '';
-    try {
-      apiKey = JSON.parse(savedConfig).twelveDataKey;
-    } catch (e) {
-      setError('Error al leer la configuración.');
-      return;
-    }
-
-    if (!apiKey) {
-      setError('La API Key de Twelve Data es obligatoria. Ve a Configuración.');
-      return;
-    }
-
+  const loadData = async () => {
     setLoading(true);
-    setAiSummary(null);
-
-    // Leer aiKey del localStorage si hay y está habilitada
-    let aiKey: string | undefined;
+    setError(null);
     try {
-      const cfg = JSON.parse(localStorage.getItem('gapAnalyzerConfig') || '{}');
-      if (cfg.enableAI && cfg.aiKey) aiKey = cfg.aiKey;
-    } catch (_) {}
-    
-    try {
-      const res = await authFetch('https://gap-analyzer-worker.agrolepra.workers.dev/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tickers, apiKey, ...(aiKey ? { aiKey } : {}) })
-      });
+      const [historyRes, tickersRes, summaryRes] = await Promise.all([
+        authFetch(`${WORKER}/history`),
+        authFetch(`${WORKER}/tickers`),
+        authFetch(`${WORKER}/ai-summary/latest`),
+      ]);
 
-      const data = await res.json();
-      
-      if (!res.ok) {
-        throw new Error(data.error || 'Error en la solicitud');
+      const historyData = await historyRes.json();
+      if (!historyRes.ok) throw new Error(historyData.error || 'Error al cargar el historial de gaps');
+      setHistory(historyData.results || []);
+
+      const tickersData = await tickersRes.json();
+      if (tickersRes.ok) {
+        const active = (tickersData.tickers || []).filter((t: TickerRow) => t.active === 1);
+        setActiveTickerCount(active.length);
       }
 
-      const results: GapData[] = data.gaps || [];
-      const filterRes = results.filter(g => g.distClosestPct <= 7);
-      
-      setAllGaps(results);
-      setFilteredGaps(filterRes);
-      if (data.aiSummary) setAiSummary(data.aiSummary);
-      const ts = new Date().toISOString();
-      setLastAnalysis(ts);
-
-      // Guardar en localStorage
-      localStorage.setItem('dashboardState', JSON.stringify({
-        allGaps: results,
-        filteredGaps: filterRes,
-        aiSummary: data.aiSummary || null,
-        timestamp: ts
-      }));
-
+      const summaryData = await summaryRes.json();
+      if (summaryRes.ok) setAiSummary(summaryData.summary || null);
     } catch (err: any) {
-      setError(err.message || 'Error desconocido al analizar los gaps.');
+      setError(err.message || 'Error desconocido al cargar el dashboard.');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDownloadExcel = () => {
-    if (allGaps.length === 0) return;
+  useEffect(() => { loadData(); }, []);
 
-    const wb = XLSX.utils.book_new();
+  const latestAnalysisDate = useMemo(() => {
+    if (history.length === 0) return null;
+    return history.reduce((max, r) => (r.analysis_date > max ? r.analysis_date : max), history[0].analysis_date);
+  }, [history]);
 
-    const wsAll = XLSX.utils.json_to_sheet(allGaps.map(g => ({
-      'Ticker': g.ticker,
-      'Tipo': g.type,
-      'Fecha del Gap': g.date.split(' ')[0],
-      'Cierre Actual': g.currentClose,
-      'Punto más cercano': g.closestPoint,
-      'Punto más lejano': g.farthestPoint,
-      '% dist. Punto Cercano': g.distClosestPct,
-      '% dist. Punto Lejano': g.distFarthestPct,
-      '% Ancho Gap': g.widthPct
-    })));
-    XLSX.utils.book_append_sheet(wb, wsAll, "Resumen General");
+  const currentGaps = useMemo(
+    () => history.filter(r => r.analysis_date === latestAnalysisDate),
+    [history, latestAnalysisDate]
+  );
 
-    const wsFiltered = XLSX.utils.json_to_sheet(filteredGaps.map(g => ({
-      'Ticker': g.ticker,
-      'Tipo': g.type,
-      'Fecha del Gap': g.date.split(' ')[0],
-      'Cierre Actual': g.currentClose,
-      'Punto más cercano': g.closestPoint,
-      'Punto más lejano': g.farthestPoint,
-      '% dist. Punto Cercano': g.distClosestPct,
-      '% dist. Punto Lejano': g.distFarthestPct,
-      '% Ancho Gap': g.widthPct
-    })));
-    XLSX.utils.book_append_sheet(wb, wsFiltered, "Gaps Cercanos (<= 7%)");
+  const nearGapsCount = useMemo(
+    () => currentGaps.filter(r => r.dist_closest_pct <= NEAR_THRESHOLD).length,
+    [currentGaps]
+  );
 
-    XLSX.writeFile(wb, `Reporte_Gaps_${new Date().toISOString().split('T')[0]}.xlsx`);
+  const typeBreakdown = useMemo(() => {
+    const bullish = currentGaps.filter(r => r.type === 'Bullish').length;
+    const bearish = currentGaps.filter(r => r.type === 'Bearish').length;
+    return [
+      { name: 'Bullish', value: bullish },
+      { name: 'Bearish', value: bearish },
+    ];
+  }, [currentGaps]);
+
+  const trendData = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const r of history) {
+      counts.set(r.analysis_date, (counts.get(r.analysis_date) || 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .slice(-14)
+      .map(([date, count]) => ({ date: date.slice(5), gaps: count }));
+  }, [history]);
+
+  const generateSummary = async () => {
+    setGeneratingSummary(true);
+    setError(null);
+    try {
+      const res = await authFetch(`${WORKER}/ai-summary`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Error al generar el resumen de IA');
+      setAiSummary({
+        summary: data.summary,
+        gaps_count: data.gapsCount,
+        trigger_type: 'manual',
+        generated_at: new Date().toISOString(),
+      });
+      showToast('Resumen IA generado', 'success');
+    } catch (err: any) {
+      setError(err.message || 'Error desconocido al generar el resumen.');
+    } finally {
+      setGeneratingSummary(false);
+    }
   };
 
   return (
     <div className={styles.page}>
       <div className={styles.header}>
-        <h1>Dashboard de Gaps</h1>
-        <p>Analiza el mercado y encuentra oportunidades de gaps no cubiertos.</p>
-        {lastAnalysis && (
-           <p style={{fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '8px'}}>
-             Último análisis: {new Date(lastAnalysis).toLocaleString()}
-           </p>
-        )}
+        <h1 className="text-gradient">Dashboard</h1>
+        <p>Panorama general del mercado y los gaps detectados.</p>
       </div>
 
-      <div className={`glass-panel ${styles.panel}`}>
-        <FormField 
-          label="Lista de Tickers" 
-          description="Escribe o pega los tickers (se autocompletan al presionar Enter, Espacio, Coma o Tab)."
-        >
-          <TickerChips tickers={tickers} onChange={handleTickersChange} />
-        </FormField>
+      {error && <div className={styles.error}>{error}</div>}
 
-        {error && <div className={styles.error}>{error}</div>}
-
-        <div className={styles.actions}>
-          <Button isLoading={loading} onClick={handleAnalyze}>
-            Analizar Mercado
-          </Button>
-          <Button 
-            variant="secondary" 
-            disabled={allGaps.length === 0 || loading} 
-            onClick={handleDownloadExcel}
-          >
-            Descargar Excel
-          </Button>
-        </div>
-      </div>
-
-      {aiSummary && (
-        <div className="glass-panel" style={{ padding: '24px', borderLeft: '3px solid var(--accent-primary)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
-            <span style={{ fontSize: '1.2rem' }}>✨</span>
-            <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 600, color: '#a5b4fc' }}>Análisis IA (GPT-4o-mini)</h3>
+      {loading ? (
+        <div className={styles.loadingState}>Cargando dashboard...</div>
+      ) : (
+        <>
+          <div className={styles.kpiGrid}>
+            <div className={`glass-panel ${styles.kpiCard}`}>
+              <span className={styles.kpiLabel}>Tickers Activos</span>
+              <span className={styles.kpiValue}>{activeTickerCount}</span>
+            </div>
+            <div className={`glass-panel ${styles.kpiCard}`}>
+              <span className={styles.kpiLabel}>Gaps Detectados</span>
+              <span className={styles.kpiValue}>{currentGaps.length}</span>
+            </div>
+            <div className={`glass-panel ${styles.kpiCard}`}>
+              <span className={styles.kpiLabel}>Gaps ≤ {NEAR_THRESHOLD}%</span>
+              <span className={styles.kpiValue} style={{ color: 'var(--success)' }}>{nearGapsCount}</span>
+            </div>
+            <div className={`glass-panel ${styles.kpiCard}`}>
+              <span className={styles.kpiLabel}>Última Actualización</span>
+              <span className={styles.kpiValueSmall}>
+                {latestAnalysisDate ? new Date(latestAnalysisDate).toLocaleDateString() : 'Sin datos'}
+              </span>
+            </div>
           </div>
-          <p style={{ margin: 0, lineHeight: 1.7, color: 'var(--text-secondary)', fontSize: '0.9rem', whiteSpace: 'pre-wrap' }}>
-            {aiSummary}
-          </p>
-        </div>
-      )}
 
-      {allGaps.length > 0 && (
-        <div className={styles.resultsArea}>
-          <h2 className={styles.tableTitle}>Resumen General ({allGaps.length} gaps)</h2>
-          <GapTable data={allGaps} />
+          {currentGaps.length > 0 ? (
+            <div className={styles.chartsGrid}>
+              <div className={`glass-panel ${styles.chartPanel}`}>
+                <h3 className={styles.chartTitle}>Bullish vs Bearish</h3>
+                <ResponsiveContainer width="100%" height={220}>
+                  <PieChart>
+                    <Pie data={typeBreakdown} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label>
+                      {typeBreakdown.map((entry, i) => (
+                        <Cell key={entry.name} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip contentStyle={{ background: '#1a1a24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8 }} />
+                    <Legend />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
 
-          <h2 className={styles.tableTitle} style={{ marginTop: '40px' }}>
-            Gaps a &lt;= 7% de distancia ({filteredGaps.length} gaps)
-          </h2>
-          <GapTable data={filteredGaps} />
-        </div>
+              <div className={`glass-panel ${styles.chartPanel}`}>
+                <h3 className={styles.chartTitle}>Gaps por Fecha de Análisis</h3>
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={trendData}>
+                    <XAxis dataKey="date" stroke="var(--text-muted)" fontSize={12} />
+                    <YAxis stroke="var(--text-muted)" fontSize={12} allowDecimals={false} />
+                    <Tooltip contentStyle={{ background: '#1a1a24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8 }} />
+                    <Bar dataKey="gaps" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          ) : (
+            <div className={styles.loadingState}>
+              Todavía no hay gaps calculados. Agregá tickers en Configuración o visitá la página de Gaps.
+            </div>
+          )}
+
+          <div className={`glass-panel ${styles.aiPanel}`}>
+            <div className={styles.aiHeader}>
+              <div className={styles.aiTitle}>
+                <Sparkles size={18} color="#a5b4fc" />
+                <h3>Resumen de IA</h3>
+              </div>
+              <Button variant="secondary" onClick={generateSummary} isLoading={generatingSummary}>
+                Generar resumen IA
+              </Button>
+            </div>
+            {aiSummary ? (
+              <>
+                <p className={styles.aiText}>{aiSummary.summary}</p>
+                <p className={styles.aiMeta}>
+                  {aiSummary.trigger_type === 'auto' ? 'Generado automáticamente' : 'Generado manualmente'} · {new Date(aiSummary.generated_at).toLocaleString()}
+                </p>
+              </>
+            ) : (
+              <p className={styles.aiText} style={{ color: 'var(--text-muted)' }}>
+                Todavía no hay un resumen de IA generado.
+              </p>
+            )}
+          </div>
+        </>
       )}
     </div>
   );

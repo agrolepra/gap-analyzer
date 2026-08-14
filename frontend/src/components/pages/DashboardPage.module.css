@@ -1,11 +1,10 @@
 .page {
   max-width: 1200px;
   margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
   animation: fadeIn 0.4s ease-out;
-}
-
-.header {
-  margin-bottom: 32px;
 }
 
 .header h1 {
@@ -18,54 +17,114 @@
   margin: 0;
 }
 
-.panel {
-  padding: 32px;
-  margin-bottom: 32px;
-}
-
-.actions {
-  display: flex;
-  gap: 16px;
-  margin-top: 24px;
-  flex-wrap: wrap;
-}
-
-.filterInput, .filterSelect {
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border-color);
-  color: var(--text-primary);
-  padding: 8px 12px;
-  border-radius: 8px;
-  font-family: inherit;
-  font-size: 0.9rem;
-  color-scheme: dark;
-}
-
-.filterSelect option {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-}
-
 .error {
   color: var(--danger);
   background: var(--danger-bg);
   padding: 12px 16px;
   border-radius: 8px;
-  margin-top: 16px;
   font-size: 0.9rem;
   border: 1px solid rgba(239, 68, 68, 0.2);
 }
 
-.resultsArea {
-  margin-top: 40px;
-  animation: fadeIn 0.6s ease-out;
+.loadingState {
+  padding: 40px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-style: italic;
+  background: var(--glass-bg);
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
 }
 
-.tableTitle {
-  font-size: 1.25rem;
-  font-weight: 600;
-  margin: 0 0 16px 0;
+.kpiGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+}
+
+.kpiCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 20px;
+}
+
+.kpiLabel {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.kpiValue {
+  font-size: 2rem;
+  font-weight: 700;
   color: var(--text-primary);
+}
+
+.kpiValueSmall {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.chartsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.chartPanel {
+  padding: 20px;
+}
+
+.chartTitle {
+  margin: 0 0 12px 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.aiPanel {
+  padding: 24px;
+  border-left: 3px solid var(--accent-primary);
+}
+
+.aiHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.aiTitle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.aiTitle h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #a5b4fc;
+}
+
+.aiText {
+  margin: 0;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+}
+
+.aiMeta {
+  margin: 12px 0 0 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
 }
 
 @keyframes fadeIn {
@@ -74,23 +133,13 @@
 }
 
 @media (max-width: 768px) {
-  .header {
-    margin-bottom: 20px;
-  }
   .header h1 {
     font-size: 1.5rem;
   }
-  .panel {
+  .kpiValue {
+    font-size: 1.5rem;
+  }
+  .aiPanel {
     padding: 16px;
-    margin-bottom: 20px;
-  }
-  .actions {
-    gap: 10px;
-  }
-  .resultsArea {
-    margin-top: 24px;
-  }
-  .tableTitle {
-    font-size: 1rem;
   }
 }

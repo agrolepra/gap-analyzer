@@ -4,11 +4,17 @@ import { sendEmail, sendWhatsApp } from './notifications.js';
 
 const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PATCH, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
-const WORKER_BASE = 'https://gap-analyzer-worker.agrolepra.workers.dev';
+function json(data, status = 200) {
+    return new Response(JSON.stringify(data), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+}
+
+function todayStr() {
+    return new Date().toISOString().split('T')[0];
+}
 
 async function logAudit(db, action, details) {
     if(!db) return;
@@ -29,7 +35,7 @@ async function checkAuth(request, env) {
     const authHeader = request.headers.get('Authorization') || '';
     const token = authHeader.replace('Bearer ', '').trim();
     if (!token) return false;
-    
+
     try {
         const session = await env.DB.prepare("SELECT username FROM user_sessions WHERE token = ?").bind(token).first();
         return !!session;
@@ -47,7 +53,7 @@ async function fetchBatch(tickerChunk, twelvedataKey, outputsize = 30) {
     const url = `https://api.twelvedata.com/time_series?symbol=${symbols}&interval=1day&outputsize=${outputsize}&apikey=${twelvedataKey}`;
     const resp = await fetch(url);
     const data = await resp.json();
-    
+
     // Si es 1 solo ticker la API devuelve directamente el objeto con values
     if (tickerChunk.length === 1) {
         return { [tickerChunk[0]]: data };
@@ -56,22 +62,32 @@ async function fetchBatch(tickerChunk, twelvedataKey, outputsize = 30) {
     return data;
 }
 
-async function processTickers(tickers, twelvedataKey, env, outputsize = 30) {
+// Ingiere datos de TwelveData respetando el límite de 8 req/min (batches de 8 + 12s de delay).
+// Si se pasa jobId, reporta progreso (total_batches/completed_batches) en la tabla jobs.
+async function processTickers(tickers, twelvedataKey, env, outputsize = 30, jobId = null) {
     let allGaps = [];
     const BATCH_SIZE = 8; // máx 8 symbols por request en plan gratuito
     const DELAY_MS = 12000; // 12 seg entre batches para respetar 8 req/min
 
+    const totalBatches = Math.ceil(tickers.length / BATCH_SIZE);
+    if (jobId && env?.DB) {
+        try { await env.DB.prepare("UPDATE jobs SET total_batches = ? WHERE id = ?").bind(totalBatches, jobId).run(); } catch (_) {}
+    }
+
     for (let i = 0; i < tickers.length; i += BATCH_SIZE) {
         const chunk = tickers.slice(i, i + BATCH_SIZE);
-        
+
         // Esperar entre batches (excepto el primero)
         if (i > 0) await new Promise(r => setTimeout(r, DELAY_MS));
-        
+
         let batchData;
         try {
             batchData = await fetchBatch(chunk, twelvedataKey, outputsize);
         } catch(e) {
             console.error('Error en batch fetch:', e);
+            if (jobId && env?.DB) {
+                try { await env.DB.prepare("UPDATE jobs SET completed_batches = completed_batches + 1 WHERE id = ?").bind(jobId).run(); } catch (_) {}
+            }
             continue;
         }
 
@@ -97,18 +113,190 @@ async function processTickers(tickers, twelvedataKey, env, outputsize = 30) {
             const gaps = analyzeGaps(ticker, sortedData);
             allGaps.push(...gaps);
 
-            // 3. Guardar gaps en BD
+            // 3. Guardar gaps en BD (OR REPLACE: evita duplicados si se re-procesa el mismo rango)
             if (env?.DB && gaps.length > 0) {
-                const stmt = env.DB.prepare("INSERT INTO gaps_history (ticker, type, gap_date, closest_point, farthest_point, dist_closest_pct, dist_farthest_pct, width_pct, current_close, analysis_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                const stmt = env.DB.prepare("INSERT OR REPLACE INTO gaps_history (ticker, type, gap_date, closest_point, farthest_point, dist_closest_pct, dist_farthest_pct, width_pct, current_close, analysis_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                 const batchStmts = gaps.map(g =>
                     stmt.bind(g.ticker, g.type, g.gap_date, g.closest_point, g.farthest_point, g.dist_closest_pct, g.dist_farthest_pct, g.width_pct, g.current_close, g.analysis_date)
                 );
                 try { await env.DB.batch(batchStmts); } catch(e) { console.error("Error guardando historial de gaps:", e); }
             }
         }
+
+        if (jobId && env?.DB) {
+            try { await env.DB.prepare("UPDATE jobs SET completed_batches = completed_batches + 1 WHERE id = ?").bind(jobId).run(); } catch (_) {}
+        }
     }
 
     return allGaps;
+}
+
+// Recalcula gaps leyendo solo lo ya guardado en D1 — nunca llama a TwelveData.
+async function recalculateGaps(env, tickerList) {
+    let allGaps = [];
+    for (const ticker of tickerList) {
+        const { results } = await env.DB.prepare(
+            "SELECT date, open_price, high_price, low_price, close_price FROM daily_prices WHERE ticker = ? ORDER BY date ASC"
+        ).bind(ticker).all();
+        if (!results || results.length < 2) continue;
+
+        const mapped = results.map(r => ({
+            datetime: r.date,
+            open: r.open_price,
+            high: r.high_price,
+            low: r.low_price,
+            close: r.close_price,
+        }));
+
+        const gaps = analyzeGaps(ticker, mapped);
+        allGaps.push(...gaps);
+
+        if (gaps.length > 0) {
+            const stmt = env.DB.prepare("INSERT OR REPLACE INTO gaps_history (ticker, type, gap_date, closest_point, farthest_point, dist_closest_pct, dist_farthest_pct, width_pct, current_close, analysis_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            const batchStmts = gaps.map(g =>
+                stmt.bind(g.ticker, g.type, g.gap_date, g.closest_point, g.farthest_point, g.dist_closest_pct, g.dist_farthest_pct, g.width_pct, g.current_close, g.analysis_date)
+            );
+            try { await env.DB.batch(batchStmts); } catch(e) { console.error("Error guardando historial de gaps:", e); }
+        }
+    }
+    return allGaps;
+}
+
+function gapsToCamel(gaps) {
+    return gaps.map(g => ({
+        ticker: g.ticker,
+        type: g.type,
+        date: g.gap_date,
+        closestPoint: g.closest_point,
+        farthestPoint: g.farthest_point,
+        distClosestPct: parseFloat(Number(g.dist_closest_pct).toFixed(2)),
+        distFarthestPct: parseFloat(Number(g.dist_farthest_pct).toFixed(2)),
+        widthPct: parseFloat(Number(g.width_pct).toFixed(2)),
+        currentClose: g.current_close,
+        analysisDate: g.analysis_date,
+    }));
+}
+
+async function getActiveTickers(env) {
+    const { results } = await env.DB.prepare("SELECT ticker FROM tickers WHERE active = 1 ORDER BY ticker ASC").all();
+    return results.map(r => r.ticker);
+}
+
+// ----- Sistema de jobs (backfill / daily_update) -----
+
+async function enqueueJob(env, { type, tickers, from_date, to_date }) {
+    const tickersStr = tickers.join(',');
+
+    if (type === 'backfill') {
+        // No duplicar un backfill ya encolado/corriendo para el mismo set de tickers
+        const existing = await env.DB.prepare(
+            "SELECT id FROM jobs WHERE type = 'backfill' AND tickers = ? AND status IN ('queued','running')"
+        ).bind(tickersStr).first();
+        if (existing) return existing.id;
+    }
+
+    const result = await env.DB.prepare(
+        "INSERT INTO jobs (type, tickers, from_date, to_date, status) VALUES (?, ?, ?, ?, 'queued')"
+    ).bind(type, tickersStr, from_date || null, to_date || null).run();
+    return result.meta.last_row_id;
+}
+
+async function hasRunningJob(env) {
+    const row = await env.DB.prepare("SELECT id FROM jobs WHERE status = 'running' LIMIT 1").first();
+    return !!row;
+}
+
+async function getNextQueuedJob(env) {
+    return await env.DB.prepare("SELECT * FROM jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1").first();
+}
+
+async function maybeStartNextJob(env, ctx) {
+    if (await hasRunningJob(env)) return;
+    const job = await getNextQueuedJob(env);
+    if (job) {
+        ctx.waitUntil(runJob(job, env, ctx));
+    }
+}
+
+async function runJob(job, env, ctx) {
+    const tickers = job.tickers.split(',').map(t => t.trim()).filter(Boolean);
+    await env.DB.prepare("UPDATE jobs SET status='running', started_at=CURRENT_TIMESTAMP WHERE id=?").bind(job.id).run();
+
+    try {
+        const twelvedataKey = env.TWELVEDATA_API_KEY;
+        let outputsize;
+        if (job.type === 'daily_update') {
+            outputsize = 5; // colchón para no perder días si falló un tick de cron
+        } else {
+            const from = job.from_date ? new Date(job.from_date) : new Date('2025-01-01');
+            const to = job.to_date ? new Date(job.to_date) : new Date();
+            const days = Math.ceil((to - from) / 86400000) + 5;
+            outputsize = Math.min(Math.max(days, 30), 5000);
+        }
+
+        await processTickers(tickers, twelvedataKey, env, outputsize, job.id);
+
+        if (job.type === 'daily_update') {
+            const activeTickers = await getActiveTickers(env);
+            const gaps = await recalculateGaps(env, activeTickers);
+            const gapsCamel = gapsToCamel(gaps);
+
+            let aiSummary = null;
+            if (env.OPENAI_API_KEY && gaps.length > 0) {
+                aiSummary = await generateSummary(gapsCamel, env.OPENAI_API_KEY);
+                if (aiSummary) {
+                    await env.DB.prepare(
+                        "INSERT INTO ai_summaries (summary, gaps_count, trigger_type) VALUES (?, ?, 'auto')"
+                    ).bind(aiSummary, gaps.length).run();
+                }
+            }
+
+            if (gaps.length > 0 && aiSummary) {
+                await sendEmail(aiSummary, env);
+                await sendWhatsApp(aiSummary, env);
+            }
+        }
+
+        await env.DB.prepare("UPDATE jobs SET status='done', completed_at=CURRENT_TIMESTAMP WHERE id=?").bind(job.id).run();
+        await logAudit(env.DB, `Job ${job.type} completado`, `Tickers: ${job.tickers}`);
+    } catch (e) {
+        console.error('Error ejecutando job:', e);
+        try {
+            await env.DB.prepare("UPDATE jobs SET status='error', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=?").bind(String(e.message || e), job.id).run();
+        } catch (_) {}
+    }
+
+    // Drenado secuencial: si hay otro job en cola, arrancarlo
+    const next = await getNextQueuedJob(env);
+    if (next) {
+        ctx.waitUntil(runJob(next, env, ctx));
+    }
+}
+
+// Reactiva un ticker inactivo y encola un backfill de "catch-up" (solo lo que falta desde el último dato guardado).
+async function reactivateTicker(env, ticker) {
+    await env.DB.prepare("UPDATE tickers SET active = 1 WHERE ticker = ?").bind(ticker).run();
+
+    const lastRow = await env.DB.prepare("SELECT MAX(date) as last_date FROM daily_prices WHERE ticker = ?").bind(ticker).first();
+    let fromDate = '2025-01-01';
+    if (lastRow?.last_date) {
+        const d = new Date(lastRow.last_date);
+        d.setUTCDate(d.getUTCDate() + 1);
+        fromDate = d.toISOString().split('T')[0];
+    }
+    const to = todayStr();
+    if (fromDate <= to) {
+        await enqueueJob(env, { type: 'backfill', tickers: [ticker], from_date: fromDate, to_date: to });
+    }
+    await logAudit(env.DB, 'Ticker reactivado', ticker);
+}
+
+function isWithinWindow(nowHHMM, targetHHMM, windowMinutes) {
+    const toMinutes = (hhmm) => {
+        const [h, m] = hhmm.split(':').map(Number);
+        return h * 60 + m;
+    };
+    return Math.abs(toMinutes(nowHHMM) - toMinutes(targetHHMM)) <= windowMinutes;
 }
 
 export default {
@@ -128,14 +316,14 @@ export default {
                 if (username !== validUser || password !== validPass) {
                     return new Response(JSON.stringify({ error: 'Credenciales incorrectas' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
                 }
-                
+
                 // Generar token UUID
                 const token = crypto.randomUUID();
                 // Guardar en la base de datos
                 if (env.DB) {
                     await env.DB.prepare("INSERT INTO user_sessions (token, username) VALUES (?, ?)").bind(token, username).run();
                 }
-                
+
                 return new Response(JSON.stringify({ token }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
             } catch(e) {
                 return new Response(JSON.stringify({ error: 'Error de autenticación: ' + e.message }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
@@ -146,90 +334,157 @@ export default {
         const isAuth = await checkAuth(request, env);
         if (!isAuth) return unauthorized();
 
+        // ---- Recalcular gaps (100% D1, nunca llama a TwelveData) ----
         if (url.pathname === '/analyze') {
-            await logAudit(env.DB, 'Manual Analysis Triggered', `IP: ${request.headers.get('cf-connecting-ip')}`);
+            await logAudit(env.DB, 'Recalculo de Gaps', `IP: ${request.headers.get('cf-connecting-ip')}`);
+            try {
+                const activeTickers = await getActiveTickers(env);
+                const gaps = await recalculateGaps(env, activeTickers);
+                return json({ success: true, gaps: gapsToCamel(gaps) });
+            } catch (e) {
+                return json({ error: e.message }, 500);
+            }
+        }
 
-            let twelvedataKey = env.TWELVEDATA_API_KEY;
-            let tickers;
-            let aiKey = null;
+        // ---- Resumen de IA ----
+        if (url.pathname === '/ai-summary' && request.method === 'POST') {
+            try {
+                let overrideKey = null;
+                try { const body = await request.json(); if (body?.aiKey) overrideKey = body.aiKey; } catch (_) {}
+                const openAiKey = overrideKey || env.OPENAI_API_KEY;
+                if (!openAiKey) return json({ error: 'No hay clave de OpenAI configurada' }, 400);
+
+                const { results: recentGaps } = await env.DB.prepare(
+                    "SELECT * FROM gaps_history WHERE analysis_date = (SELECT MAX(analysis_date) FROM gaps_history)"
+                ).all();
+                if (!recentGaps.length) {
+                    return json({ error: 'No hay gaps para resumir. Recalculá primero.' }, 400);
+                }
+
+                const gapsCamel = gapsToCamel(recentGaps);
+                const summary = await generateSummary(gapsCamel, openAiKey);
+                if (!summary) return json({ error: 'No se pudo generar el resumen' }, 500);
+
+                await env.DB.prepare(
+                    "INSERT INTO ai_summaries (summary, gaps_count, trigger_type) VALUES (?, ?, 'manual')"
+                ).bind(summary, gapsCamel.length).run();
+
+                return json({ summary, gapsCount: gapsCamel.length });
+            } catch (e) {
+                return json({ error: e.message }, 500);
+            }
+        }
+
+        if (url.pathname === '/ai-summary/latest' && request.method === 'GET') {
+            try {
+                const latest = await env.DB.prepare("SELECT * FROM ai_summaries ORDER BY generated_at DESC LIMIT 1").first();
+                return json({ summary: latest || null });
+            } catch (e) {
+                return json({ error: e.message }, 500);
+            }
+        }
+
+        // ---- Tickers (fuente única de verdad) ----
+        if (url.pathname === '/tickers' && request.method === 'GET') {
+            try {
+                const { results } = await env.DB.prepare("SELECT ticker, active, created_at FROM tickers ORDER BY ticker ASC").all();
+                return json({ tickers: results });
+            } catch (e) {
+                return json({ error: e.message }, 500);
+            }
+        }
+
+        if (url.pathname === '/tickers' && request.method === 'POST') {
             try {
                 const body = await request.json();
-                if (body.apiKey) twelvedataKey = body.apiKey;
-                if (body.tickers?.length > 0) tickers = body.tickers;
-                if (body.aiKey) aiKey = body.aiKey;
-            } catch (_) {}
+                const ticker = (body.ticker || '').trim().toUpperCase();
+                if (!ticker) return json({ error: 'Se requiere un ticker' }, 400);
 
-            if (!tickers) {
-                const tickersStr = env.TICKERS || "AAPL,MSFT,TSLA";
-                tickers = tickersStr.split(',').map(t => t.trim());
-            }
+                const existing = await env.DB.prepare("SELECT active FROM tickers WHERE ticker = ?").bind(ticker).first();
 
-            const gaps = await processTickers(tickers, twelvedataKey, env, 30);
-
-            const gapsCamel = gaps.map(g => ({
-                ticker: g.ticker,
-                type: g.type,
-                date: g.gap_date,
-                closestPoint: g.closest_point,
-                farthestPoint: g.farthest_point,
-                distClosestPct: parseFloat(g.dist_closest_pct.toFixed(2)),
-                distFarthestPct: parseFloat(g.dist_farthest_pct.toFixed(2)),
-                widthPct: parseFloat(g.width_pct.toFixed(2)),
-                currentClose: g.current_close,
-                analysisDate: g.analysis_date,
-            }));
-
-            // Generar resumen con IA si hay key (OpenAI gpt-4o-mini)
-            let aiSummary = null;
-            const openAiKey = aiKey || env.OPENAI_API_KEY;
-            if (openAiKey && gaps.length > 0) {
-                aiSummary = await generateSummary(gapsCamel, openAiKey);
-            }
-
-            // En background: enviar email/WhatsApp si aplica
-            ctx.waitUntil((async () => {
-                if (gaps.length > 0 && aiSummary) {
-                    await sendEmail(aiSummary, env);
-                    await sendWhatsApp(aiSummary, env);
+                let status;
+                if (!existing) {
+                    await env.DB.prepare("INSERT INTO tickers (ticker, active) VALUES (?, 1)").bind(ticker).run();
+                    await enqueueJob(env, { type: 'backfill', tickers: [ticker], from_date: '2025-01-01', to_date: todayStr() });
+                    await logAudit(env.DB, 'Ticker agregado', ticker);
+                    status = 'created';
+                } else if (existing.active === 0) {
+                    await reactivateTicker(env, ticker);
+                    status = 'reactivated';
+                } else {
+                    // ya existe y está activo: no-op, no se gasta cupo de API de más
+                    status = 'already_active';
                 }
-            })());
 
-            return new Response(JSON.stringify({ success: true, gaps: gapsCamel, aiSummary }), {
-                headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-            });
+                await maybeStartNextJob(env, ctx);
+                return json({ ticker, status });
+            } catch (e) {
+                return json({ error: e.message }, 500);
+            }
         }
 
-        // ---- Backfill: carga hasta 1 año de historial sin duplicar ----
-        if (url.pathname === '/backfill') {
+        const tickerPatchMatch = url.pathname.match(/^\/tickers\/([A-Za-z0-9.\-]+)$/);
+        if (tickerPatchMatch && request.method === 'PATCH') {
             try {
-                let twelvedataKey = env.TWELVEDATA_API_KEY;
-                let tickers;
-                try {
-                    const body = await request.json();
-                    if (body.apiKey) twelvedataKey = body.apiKey;
-                    if (body.tickers?.length > 0) tickers = body.tickers;
-                } catch (_) {}
+                const ticker = tickerPatchMatch[1].toUpperCase();
+                const body = await request.json();
+                const wantActive = !!body.active;
 
-                if (!tickers?.length) {
-                    return new Response(JSON.stringify({ error: 'Se requiere lista de tickers' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+                const current = await env.DB.prepare("SELECT active FROM tickers WHERE ticker = ?").bind(ticker).first();
+                if (!current) return json({ error: 'Ticker no encontrado' }, 404);
+
+                if (wantActive && current.active === 0) {
+                    await reactivateTicker(env, ticker);
+                } else if (!wantActive && current.active === 1) {
+                    await env.DB.prepare("UPDATE tickers SET active = 0 WHERE ticker = ?").bind(ticker).run();
+                    await logAudit(env.DB, 'Ticker desactivado', ticker);
                 }
 
-                // outputsize 365 = ~1 año de datos diarios
-                // Lanzamos en background para no bloquear la respuesta
-                ctx.waitUntil((async () => {
-                    await processTickers(tickers, twelvedataKey, env, 365);
-                    await logAudit(env.DB, 'Backfill Completed', `Tickers: ${tickers.join(',')}`);
-                })());
-
-                return new Response(JSON.stringify({ 
-                    message: `Backfill iniciado para ${tickers.length} ticker(s). Los datos se cargarán en segundo plano (puede tardar varios minutos respetando el límite de la API).`,
-                    tickers 
-                }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-            } catch(e) {
-                return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: corsHeaders });
+                await maybeStartNextJob(env, ctx);
+                return json({ ticker, active: wantActive });
+            } catch (e) {
+                return json({ error: e.message }, 500);
             }
         }
-        
+
+        // ---- Jobs (banner de progreso persistente) ----
+        if (url.pathname === '/jobs/active' && request.method === 'GET') {
+            try {
+                const running = await env.DB.prepare("SELECT * FROM jobs WHERE status = 'running' ORDER BY started_at DESC LIMIT 1").first();
+                const { results: queued } = await env.DB.prepare("SELECT * FROM jobs WHERE status = 'queued' ORDER BY created_at ASC").all();
+                const lastCompleted = await env.DB.prepare("SELECT * FROM jobs WHERE status IN ('done','error') ORDER BY completed_at DESC LIMIT 1").first();
+                return json({ running: running || null, queued, lastCompleted: lastCompleted || null });
+            } catch (e) {
+                return json({ error: e.message }, 500);
+            }
+        }
+
+        // ---- Configuración (app_settings) ----
+        if (url.pathname === '/settings' && request.method === 'GET') {
+            try {
+                const { results } = await env.DB.prepare("SELECT key, value FROM app_settings").all();
+                const settings = {};
+                for (const row of results) settings[row.key] = row.value;
+                return json({ settings });
+            } catch (e) {
+                return json({ error: e.message }, 500);
+            }
+        }
+
+        if (url.pathname === '/settings' && request.method === 'POST') {
+            try {
+                const body = await request.json();
+                if (!body.key) return json({ error: 'Se requiere key' }, 400);
+                await env.DB.prepare(
+                    "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+                ).bind(body.key, String(body.value)).run();
+                await logAudit(env.DB, 'Setting actualizado', `${body.key}=${body.value}`);
+                return json({ key: body.key, value: body.value });
+            } catch (e) {
+                return json({ error: e.message }, 500);
+            }
+        }
+
         if (url.pathname === '/history') {
             try {
                 const { results } = await env.DB.prepare("SELECT * FROM gaps_history ORDER BY analysis_date DESC LIMIT 500").all();
@@ -263,19 +518,44 @@ export default {
             }
         }
 
-        return new Response("Gap Analyzer API. Endpoints: /auth, /analyze, /backfill, /history, /prices", { headers: corsHeaders });
+        return new Response("Gap Analyzer API. Endpoints: /auth, /analyze, /ai-summary, /tickers, /jobs/active, /settings, /history, /prices", { headers: corsHeaders });
     },
 
     async scheduled(event, env, ctx) {
-        await logAudit(env.DB, 'Cron Analysis Triggered', `Cron: ${event.cron}`);
-        const twelvedataKey = env.TWELVEDATA_API_KEY;
-        const tickersStr = env.TICKERS || "AAPL,MSFT,TSLA";
-        const tickers = tickersStr.split(',').map(t => t.trim());
-        const gaps = await processTickers(tickers, twelvedataKey, env, 30);
-        if (gaps.length > 0) {
-            const summary = await generateSummary(gaps, env.ANTHROPIC_API_KEY);
-            await sendEmail(summary, env);
-            await sendWhatsApp(summary, env);
+        try {
+            await logAudit(env.DB, 'Cron Tick', `Cron: ${event.cron}`);
+
+            if (await hasRunningJob(env)) return;
+
+            const queuedJob = await getNextQueuedJob(env);
+            if (queuedJob) {
+                await runJob(queuedJob, env, ctx);
+                return;
+            }
+
+            const settingsRow = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'update_hour_utc'").first();
+            const updateHour = settingsRow?.value || '21:30';
+
+            const now = new Date();
+            const nowHHMM = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')}`;
+            const today = todayStr();
+
+            const lastRunRow = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'last_daily_update_date'").first();
+            const alreadyRanToday = lastRunRow?.value === today;
+
+            if (!alreadyRanToday && isWithinWindow(nowHHMM, updateHour, 5)) {
+                const activeTickers = await getActiveTickers(env);
+                if (activeTickers.length > 0) {
+                    const jobId = await enqueueJob(env, { type: 'daily_update', tickers: activeTickers, from_date: null, to_date: today });
+                    await env.DB.prepare(
+                        "INSERT INTO app_settings (key, value) VALUES ('last_daily_update_date', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+                    ).bind(today).run();
+                    const job = await env.DB.prepare("SELECT * FROM jobs WHERE id = ?").bind(jobId).first();
+                    if (job) await runJob(job, env, ctx);
+                }
+            }
+        } catch (e) {
+            console.error('Error en scheduled():', e);
         }
     }
 };

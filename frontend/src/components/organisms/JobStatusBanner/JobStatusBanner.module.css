@@ -1,0 +1,70 @@
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  border-radius: 10px;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+}
+
+.spinner {
+  color: var(--accent-primary);
+  animation: spin 1s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.label {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.progressTrack {
+  flex: 1;
+  min-width: 60px;
+  height: 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  background: var(--accent-gradient);
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+
+.progressText {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.queueCount {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  font-size: 0.8rem;
+}
+
+@media (max-width: 768px) {
+  .banner {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .progressTrack {
+    order: 3;
+    flex-basis: 100%;
+  }
+}
