@@ -43,7 +43,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          projectName: gap-analyzer-frontend
+          projectName: gap-analyzer-ivan
           directory: frontend/dist
           branch: ${{ github.ref_name }}
 
