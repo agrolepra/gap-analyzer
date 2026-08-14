@@ -1,7 +1,7 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "gap-analyzer-worker",
-	"account_id": "c379fe993641e5595bad41f86135c4ae",
+	"account_id": "4332c80d60c65b8191fa453f3bb0ee74",
 	"main": "src/index.js",
 	"compatibility_date": "2026-08-10",
 	"observability": {
