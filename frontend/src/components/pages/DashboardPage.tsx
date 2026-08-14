@@ -5,6 +5,7 @@ import { Button } from '../atoms/Button';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { getLatestGapsPerTicker, type HistoryRow } from '../../utils/latestGaps';
+import { renderMiniMarkdown } from '../../utils/miniMarkdown';
 import styles from './DashboardPage.module.css';
 
 const WORKER = 'https://gap-analyzer-worker.agrolepra.workers.dev';
@@ -230,7 +231,7 @@ export const DashboardPage: React.FC = () => {
                     Cierre del {new Date(aiSummary.summary_date).toLocaleDateString()}
                   </p>
                 )}
-                <p className={styles.aiText}>{aiSummary.summary}</p>
+                <div className={styles.aiText}>{renderMiniMarkdown(aiSummary.summary, styles)}</div>
                 <p className={styles.aiMeta}>
                   {aiSummary.trigger_type === 'auto' ? 'Generado automáticamente' : 'Generado manualmente'} · {new Date(aiSummary.generated_at).toLocaleString()}
                 </p>
