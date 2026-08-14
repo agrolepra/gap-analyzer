@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Plus, Search, Upload } from 'lucide-react';
+import { Plus, Search, Upload, ChevronDown, ChevronRight } from 'lucide-react';
 import { FormField } from '../molecules/FormField';
 import { Input } from '../atoms/Input';
 import { Toggle } from '../atoms/Toggle';
@@ -43,6 +43,7 @@ export const ConfigPage: React.FC = () => {
   const [addingTicker, setAddingTicker] = useState(false);
   const [togglingTicker, setTogglingTicker] = useState<string | null>(null);
   const [filterText, setFilterText] = useState('');
+  const [showInactive, setShowInactive] = useState(false);
 
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [bulkText, setBulkText] = useState('');
@@ -188,6 +189,12 @@ export const ConfigPage: React.FC = () => {
     return tickers.filter(t => t.ticker.includes(q));
   }, [tickers, filterText]);
 
+  // Al desactivar/reactivar, toggleTicker ya actualiza `tickers` en memoria —
+  // como esta partición se deriva de ese mismo estado, el ticker se reubica
+  // de sección al instante, sin recargar nada.
+  const activeTickers = useMemo(() => filteredTickers.filter(t => t.active === 1), [filteredTickers]);
+  const inactiveTickers = useMemo(() => filteredTickers.filter(t => t.active === 0), [filteredTickers]);
+
   const saveUpdateHour = async () => {
     setSavingHour(true);
     setError(null);
@@ -274,22 +281,54 @@ export const ConfigPage: React.FC = () => {
         {loading ? (
           <div className={styles.loadingState}>Cargando tickers...</div>
         ) : (
-          <div className={styles.tickerGrid}>
+          <>
             {tickers.length === 0 && <p className={styles.sectionDesc}>Todavía no hay tickers configurados.</p>}
             {tickers.length > 0 && filteredTickers.length === 0 && (
               <p className={styles.sectionDesc}>Ningún ticker coincide con "{filterText}".</p>
             )}
-            {filteredTickers.map(t => (
-              <div key={t.ticker} className={styles.tickerChip}>
-                <span className={`${styles.tickerName} ${t.active ? '' : styles.tickerInactive}`}>{t.ticker}</span>
-                <Toggle
-                  checked={t.active === 1}
-                  disabled={togglingTicker === t.ticker}
-                  onChange={(e) => toggleTicker(t.ticker, e.target.checked)}
-                />
+
+            {activeTickers.length > 0 && (
+              <div className={styles.tickerGrid}>
+                {activeTickers.map(t => (
+                  <div key={t.ticker} className={styles.tickerChip}>
+                    <span className={styles.tickerName}>{t.ticker}</span>
+                    <Toggle
+                      checked={t.active === 1}
+                      disabled={togglingTicker === t.ticker}
+                      onChange={(e) => toggleTicker(t.ticker, e.target.checked)}
+                    />
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            )}
+
+            {inactiveTickers.length > 0 && (
+              <div className={styles.inactiveSection}>
+                <button
+                  type="button"
+                  className={styles.inactiveToggle}
+                  onClick={() => setShowInactive(v => !v)}
+                >
+                  {showInactive ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                  <span>Desactivados ({inactiveTickers.length})</span>
+                </button>
+                {showInactive && (
+                  <div className={styles.tickerGrid}>
+                    {inactiveTickers.map(t => (
+                      <div key={t.ticker} className={styles.tickerChip}>
+                        <span className={`${styles.tickerName} ${styles.tickerInactive}`}>{t.ticker}</span>
+                        <Toggle
+                          checked={t.active === 1}
+                          disabled={togglingTicker === t.ticker}
+                          onChange={(e) => toggleTicker(t.ticker, e.target.checked)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </>
         )}
       </div>
 

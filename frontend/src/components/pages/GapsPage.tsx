@@ -33,10 +33,19 @@ export const GapsPage: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await authFetch(`${WORKER}/history`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Error al cargar los gaps');
-      const rows: HistoryRow[] = data.results || [];
+      const [historyRes, tickersRes] = await Promise.all([
+        authFetch(`${WORKER}/history`),
+        authFetch(`${WORKER}/tickers`),
+      ]);
+      const data = await historyRes.json();
+      if (!historyRes.ok) throw new Error(data.error || 'Error al cargar los gaps');
+
+      const tickersData = await tickersRes.json();
+      const activeSet = new Set(
+        (tickersData.tickers || []).filter((t: { active: number }) => t.active === 1).map((t: { ticker: string }) => t.ticker)
+      );
+
+      const rows: HistoryRow[] = (data.results || []).filter((r: HistoryRow) => activeSet.has(r.ticker));
       const latest = getLatestGapsPerTicker(rows);
       setAllGaps(latest.map(historyRowToGapData));
       if (latest.length > 0) {

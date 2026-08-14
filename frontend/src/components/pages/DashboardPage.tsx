@@ -49,15 +49,17 @@ export const DashboardPage: React.FC = () => {
         authFetch(`${WORKER}/settings`),
       ]);
 
-      const historyData = await historyRes.json();
-      if (!historyRes.ok) throw new Error(historyData.error || 'Error al cargar el historial de gaps');
-      setHistory(historyData.results || []);
-
       const tickersData = await tickersRes.json();
+      let activeSet = new Set<string>();
       if (tickersRes.ok) {
         const active = (tickersData.tickers || []).filter((t: TickerRow) => t.active === 1);
+        activeSet = new Set(active.map((t: TickerRow) => t.ticker));
         setActiveTickerCount(active.length);
       }
+
+      const historyData = await historyRes.json();
+      if (!historyRes.ok) throw new Error(historyData.error || 'Error al cargar el historial de gaps');
+      setHistory((historyData.results || []).filter((r: HistoryRow) => activeSet.has(r.ticker)));
 
       const summaryData = await summaryRes.json();
       if (summaryRes.ok) setAiSummary(summaryData.summary || null);
