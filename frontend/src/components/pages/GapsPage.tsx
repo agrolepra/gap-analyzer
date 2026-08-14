@@ -5,7 +5,7 @@ import { Button } from '../atoms/Button';
 import { GapTable, type GapData } from '../organisms/GapTable/GapTable';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
-import { styleHeaderRow, autoFitColumns, distColorArgb, downloadWorkbook, SUCCESS_ARGB, DANGER_ARGB } from '../../utils/excelStyle';
+import { styleHeaderRow, autoFitColumns, distColorArgb, downloadWorkbook, formatDateDDMMYYYY, SUCCESS_ARGB, DANGER_ARGB } from '../../utils/excelStyle';
 import styles from './GapsPage.module.css';
 
 const WORKER = 'https://gap-analyzer-worker.agrolepra.workers.dev';
@@ -62,7 +62,7 @@ export const GapsPage: React.FC = () => {
       const row = sheet.addRow({
         ticker: g.ticker,
         type: g.type === 'Bullish' ? '▲ Bullish' : '▼ Bearish',
-        date: g.date?.split(' ')[0],
+        date: formatDateDDMMYYYY(g.date),
         currentClose: g.currentClose,
         closestPoint: g.closestPoint,
         farthestPoint: g.farthestPoint,

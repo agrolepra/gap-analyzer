@@ -5,7 +5,7 @@ import { PricesTable, type PriceData } from '../organisms/PricesTable/PricesTabl
 import { Button } from '../atoms/Button';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
-import { styleHeaderRow, autoFitColumns, downloadWorkbook, SUCCESS_ARGB, DANGER_ARGB } from '../../utils/excelStyle';
+import { styleHeaderRow, autoFitColumns, downloadWorkbook, formatDateDDMMYYYY, SUCCESS_ARGB, DANGER_ARGB } from '../../utils/excelStyle';
 import styles from './PricesPage.module.css';
 
 const WORKER = 'https://gap-analyzer-worker.agrolepra.workers.dev';
@@ -87,7 +87,7 @@ export const PricesPage: React.FC = () => {
           const varPct = prevClose ? ((row.close_price - prevClose) / prevClose) * 100 : null;
 
           const excelRow = sheet.addRow({
-            date: row.date,
+            date: formatDateDDMMYYYY(row.date),
             open: row.open_price,
             high: row.high_price,
             low: row.low_price,

@@ -32,6 +32,15 @@ export function distColorArgb(pct: number): string {
   return 'FFA0A0AB'; // gris normal
 }
 
+// Convierte "yyyy-mm-dd" o "yyyy-mm-dd HH:MM:SS" a "dd-mm-aaaa"
+export function formatDateDDMMYYYY(dateStr: string | undefined | null): string {
+  if (!dateStr) return '';
+  const datePart = dateStr.split(' ')[0];
+  const [y, m, d] = datePart.split('-');
+  if (!y || !m || !d) return dateStr;
+  return `${d}-${m}-${y}`;
+}
+
 export async function downloadWorkbook(workbook: ExcelJS.Workbook, filename: string) {
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
