@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts';
-import { Sparkles, CheckCircle2 } from 'lucide-react';
+import { Sparkles, CheckCircle2, ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from '../atoms/Button';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { getLatestGapsPerTicker, type HistoryRow } from '../../utils/latestGaps';
 import { renderMiniMarkdown } from '../../utils/miniMarkdown';
+import { formatDateDDMMYYYY, formatDateTimeBA } from '../../utils/formatDate';
 import styles from './DashboardPage.module.css';
 
 const WORKER = 'https://gap-analyzer-worker.agrolepra.workers.dev';
@@ -17,6 +18,10 @@ interface AiSummaryRow {
   trigger_type: 'manual' | 'auto';
   summary_date: string | null;
   generated_at: string;
+}
+
+interface AiSummaryHistoryRow extends AiSummaryRow {
+  id: number;
 }
 
 interface TickerRow {
@@ -33,6 +38,8 @@ export const DashboardPage: React.FC = () => {
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [activeTickerCount, setActiveTickerCount] = useState<number>(0);
   const [aiSummary, setAiSummary] = useState<AiSummaryRow | null>(null);
+  const [summaryHistory, setSummaryHistory] = useState<AiSummaryHistoryRow[]>([]);
+  const [showSummaryHistory, setShowSummaryHistory] = useState(false);
   const [lastCompletedMarketDate, setLastCompletedMarketDate] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [generatingSummary, setGeneratingSummary] = useState(false);
@@ -42,11 +49,12 @@ export const DashboardPage: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const [historyRes, tickersRes, summaryRes, settingsRes] = await Promise.all([
+      const [historyRes, tickersRes, summaryRes, settingsRes, summaryHistoryRes] = await Promise.all([
         authFetch(`${WORKER}/history`),
         authFetch(`${WORKER}/tickers`),
         authFetch(`${WORKER}/ai-summary/latest`),
         authFetch(`${WORKER}/settings`),
+        authFetch(`${WORKER}/ai-summary/history`),
       ]);
 
       const tickersData = await tickersRes.json();
@@ -66,6 +74,9 @@ export const DashboardPage: React.FC = () => {
 
       const settingsData = await settingsRes.json();
       if (settingsRes.ok) setLastCompletedMarketDate(settingsData.settings?.last_completed_market_date || null);
+
+      const summaryHistoryData = await summaryHistoryRes.json();
+      if (summaryHistoryRes.ok) setSummaryHistory(summaryHistoryData.summaries || []);
     } catch (err: any) {
       setError(err.message || 'Error desconocido al cargar el dashboard.');
     } finally {
@@ -76,11 +87,6 @@ export const DashboardPage: React.FC = () => {
   useEffect(() => { loadData(); }, []);
 
   const currentGaps = useMemo(() => getLatestGapsPerTicker(history), [history]);
-
-  const latestAnalysisDate = useMemo(() => {
-    if (currentGaps.length === 0) return null;
-    return currentGaps.reduce((max, r) => (r.analysis_date > max ? r.analysis_date : max), currentGaps[0].analysis_date);
-  }, [currentGaps]);
 
   const nearGapsCount = useMemo(
     () => currentGaps.filter(r => r.dist_closest_pct <= NEAR_THRESHOLD).length,
@@ -163,7 +169,7 @@ export const DashboardPage: React.FC = () => {
             <div className={`glass-panel ${styles.kpiCard}`}>
               <span className={styles.kpiLabel}>Última Actualización</span>
               <span className={styles.kpiValueSmall}>
-                {latestAnalysisDate ? new Date(latestAnalysisDate).toLocaleDateString() : 'Sin datos'}
+                {lastCompletedMarketDate ? formatDateDDMMYYYY(lastCompletedMarketDate) : 'Sin datos'}
               </span>
             </div>
           </div>
@@ -230,12 +236,12 @@ export const DashboardPage: React.FC = () => {
               <>
                 {aiSummary.summary_date && (
                   <p className={styles.aiDateBadge}>
-                    Cierre del {new Date(aiSummary.summary_date).toLocaleDateString()}
+                    Cierre del {formatDateDDMMYYYY(aiSummary.summary_date)}
                   </p>
                 )}
                 <div className={styles.aiText}>{renderMiniMarkdown(aiSummary.summary, styles)}</div>
                 <p className={styles.aiMeta}>
-                  {aiSummary.trigger_type === 'auto' ? 'Generado automáticamente' : 'Generado manualmente'} · {new Date(aiSummary.generated_at).toLocaleString()}
+                  {aiSummary.trigger_type === 'auto' ? 'Generado automáticamente' : 'Generado manualmente'} · {formatDateTimeBA(aiSummary.generated_at)}
                 </p>
               </>
             ) : (
@@ -244,6 +250,38 @@ export const DashboardPage: React.FC = () => {
               </p>
             )}
           </div>
+
+          {(() => {
+            const pastSummaries = summaryHistory.filter(s => s.summary_date !== aiSummary?.summary_date);
+            if (pastSummaries.length === 0) return null;
+            return (
+              <div className={`glass-panel ${styles.aiPanel}`}>
+                <button
+                  type="button"
+                  className={styles.historyToggle}
+                  onClick={() => setShowSummaryHistory(v => !v)}
+                >
+                  {showSummaryHistory ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                  <span>Historial de resúmenes ({pastSummaries.length})</span>
+                </button>
+                {showSummaryHistory && (
+                  <div className={styles.historyList}>
+                    {pastSummaries.map(s => (
+                      <div key={s.id} className={styles.historyItem}>
+                        {s.summary_date && (
+                          <p className={styles.aiDateBadge}>Cierre del {formatDateDDMMYYYY(s.summary_date)}</p>
+                        )}
+                        <div className={styles.aiText}>{renderMiniMarkdown(s.summary, styles)}</div>
+                        <p className={styles.aiMeta}>
+                          {s.trigger_type === 'auto' ? 'Generado automáticamente' : 'Generado manualmente'} · {formatDateTimeBA(s.generated_at)}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </>
       )}
     </div>

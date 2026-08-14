@@ -141,6 +141,41 @@
   font-weight: 600;
 }
 
+.historyToggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+}
+
+.historyToggle:hover {
+  color: var(--text-secondary);
+}
+
+.historyList {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  margin-top: 20px;
+}
+
+.historyItem {
+  padding-top: 20px;
+  border-top: 1px solid var(--border-color);
+}
+
+.historyItem:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
 .aiHeading {
   margin: 20px 0 8px 0;
   font-size: 0.95rem;

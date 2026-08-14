@@ -480,6 +480,17 @@ export default {
             }
         }
 
+        if (url.pathname === '/ai-summary/history' && request.method === 'GET') {
+            try {
+                const { results } = await env.DB.prepare(
+                    "SELECT * FROM ai_summaries ORDER BY generated_at DESC LIMIT 90"
+                ).all();
+                return json({ summaries: results });
+            } catch (e) {
+                return json({ error: e.message }, 500);
+            }
+        }
+
         // ---- Tickers (fuente única de verdad) ----
         if (url.pathname === '/tickers' && request.method === 'GET') {
             try {
@@ -644,6 +655,17 @@ export default {
                 await env.DB.prepare(
                     "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
                 ).bind(body.key, String(body.value)).run();
+
+                // Si se cambia la hora de actualización, hay que permitir que la
+                // actualización de HOY pueda dispararse a la nueva hora — si no,
+                // el guard "ya corrió hoy" (seteado por la corrida a la hora
+                // vieja, o por una prueba manual anterior) bloquea silenciosamente
+                // el resto del día, y el usuario nunca ve el resumen a la hora
+                // que acaba de configurar.
+                if (body.key === 'update_hour_utc') {
+                    await env.DB.prepare("DELETE FROM app_settings WHERE key = 'last_daily_update_date'").run();
+                }
+
                 await logAudit(env.DB, 'Setting actualizado', `${body.key}=${body.value}`);
                 return json({ key: body.key, value: body.value });
             } catch (e) {

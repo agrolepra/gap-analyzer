@@ -161,7 +161,7 @@ export const GapsPage: React.FC = () => {
         <p>Gaps de precio no cubiertos, calculados sobre los datos ya guardados (sin consultar la API externa).</p>
         {lastUpdated && (
           <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '8px' }}>
-            Último análisis: {new Date(lastUpdated).toLocaleDateString()}
+            Último análisis: {formatDateDDMMYYYY(lastUpdated)}
           </p>
         )}
       </div>

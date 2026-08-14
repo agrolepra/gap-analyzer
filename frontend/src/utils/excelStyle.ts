@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs';
+export { formatDateDDMMYYYY } from './formatDate';
 
 export const ACCENT_ARGB = 'FF6366F1';
 export const SUCCESS_ARGB = 'FF10B981';
@@ -30,15 +31,6 @@ export function distColorArgb(pct: number): string {
   if (pct < 3) return 'FFF97316'; // naranja urgente
   if (pct < 7) return 'FFEAB308'; // amarillo
   return 'FFA0A0AB'; // gris normal
-}
-
-// Convierte "yyyy-mm-dd" o "yyyy-mm-dd HH:MM:SS" a "dd-mm-aaaa"
-export function formatDateDDMMYYYY(dateStr: string | undefined | null): string {
-  if (!dateStr) return '';
-  const datePart = dateStr.split(' ')[0];
-  const [y, m, d] = datePart.split('-');
-  if (!y || !m || !d) return dateStr;
-  return `${d}-${m}-${y}`;
 }
 
 export async function downloadWorkbook(workbook: ExcelJS.Workbook, filename: string) {

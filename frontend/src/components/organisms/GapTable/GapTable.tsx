@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { formatDateDDMMYYYY as formatDate } from '../../../utils/formatDate';
 import styles from './GapTable.module.css';
 
 export interface GapData {
@@ -19,16 +20,6 @@ type SortDir = 'asc' | 'desc';
 interface GapTableProps {
   data: GapData[];
   showFilters?: boolean;
-}
-
-function formatDate(dateStr: string): string {
-  if (!dateStr) return '-';
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return dateStr.split(' ')[0];
-  const dd = String(d.getUTCDate()).padStart(2, '0');
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const yyyy = d.getUTCFullYear();
-  return `${dd}-${mm}-${yyyy}`;
 }
 
 function getDistColor(pct: number): string {
