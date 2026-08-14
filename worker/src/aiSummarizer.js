@@ -14,13 +14,15 @@ Respondé en español, en 3-5 párrafos como máximo. Empezá con el panorama ge
 
     try {
         const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${geminiKey}`,
             {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     contents: [{ parts: [{ text: prompt }] }],
-                    generationConfig: { maxOutputTokens: 1024 },
+                    // Este modelo gasta tokens en un paso de razonamiento interno antes
+                    // de responder; con un límite chico la respuesta real queda cortada.
+                    generationConfig: { maxOutputTokens: 4096 },
                 }),
             }
         );

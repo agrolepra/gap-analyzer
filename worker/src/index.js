@@ -113,9 +113,22 @@ async function processJobBatch(job, env) {
 
         const sortedData = [...tickerData.values].reverse(); // más antiguo → más reciente
 
-        // 1. Guardar precios en BD con INSERT OR IGNORE (nunca duplica)
+        // 1. Guardar precios en BD. Upsert (no IGNORE): si el ticker se agrega con el
+        // mercado abierto, la fila del día se crea con el precio intradía — con IGNORE
+        // esa fila quedaría fija para siempre y nunca reflejaría el cierre real. Con
+        // ON CONFLICT DO UPDATE, la corrida del cierre (daily_update, después de la hora
+        // configurada) pisa esa fila con los valores finales del día.
         if (env?.DB) {
-            const stmt = env.DB.prepare("INSERT OR IGNORE INTO daily_prices (ticker, date, open_price, high_price, low_price, close_price, volume) VALUES (?, ?, ?, ?, ?, ?, ?)");
+            const stmt = env.DB.prepare(`
+                INSERT INTO daily_prices (ticker, date, open_price, high_price, low_price, close_price, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(ticker, date) DO UPDATE SET
+                    open_price = excluded.open_price,
+                    high_price = excluded.high_price,
+                    low_price = excluded.low_price,
+                    close_price = excluded.close_price,
+                    volume = excluded.volume
+            `);
             const batchStmts = tickerData.values.map(day =>
                 stmt.bind(ticker, day.datetime, parseFloat(day.open), parseFloat(day.high), parseFloat(day.low), parseFloat(day.close), parseInt(day.volume || 0))
             );
