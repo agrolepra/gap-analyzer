@@ -62,73 +62,84 @@ async function fetchBatch(tickerChunk, twelvedataKey, outputsize = 30) {
     return data;
 }
 
-// Ingiere datos de TwelveData respetando el límite de 8 req/min (batches de 8 + 12s de delay).
-// Si se pasa jobId, reporta progreso (total_batches/completed_batches) en la tabla jobs.
-async function processTickers(tickers, twelvedataKey, env, outputsize = 30, jobId = null) {
-    let allGaps = [];
-    const BATCH_SIZE = 8; // máx 8 symbols por request en plan gratuito
-    const DELAY_MS = 12000; // 12 seg entre batches para respetar 8 req/min
+const BATCH_SIZE = 8; // máx 8 symbols por request en plan gratuito
 
+// Procesa UN SOLO batch (hasta 8 tickers) de un job y avanza su progreso.
+// Deliberadamente no hace loop ni espera in-process entre batches: cada invocación
+// hace un único request a TwelveData y retorna. El siguiente batch se procesa en la
+// siguiente invocación (disparada por el cron cada 1 min), lo que respeta sobradamente
+// el límite de 8 req/min y evita que el runtime corte una ejecución larga a mitad de camino
+// (eso fue justamente lo que dejaba jobs grandes trabados en 'running' para siempre).
+async function processJobBatch(job, env) {
+    const tickers = job.tickers.split(',').map(t => t.trim()).filter(Boolean);
     const totalBatches = Math.ceil(tickers.length / BATCH_SIZE);
-    if (jobId && env?.DB) {
-        try { await env.DB.prepare("UPDATE jobs SET total_batches = ? WHERE id = ?").bind(totalBatches, jobId).run(); } catch (_) {}
+
+    if (job.total_batches !== totalBatches) {
+        try { await env.DB.prepare("UPDATE jobs SET total_batches = ? WHERE id = ?").bind(totalBatches, job.id).run(); } catch (_) {}
     }
 
-    for (let i = 0; i < tickers.length; i += BATCH_SIZE) {
-        const chunk = tickers.slice(i, i + BATCH_SIZE);
+    const batchIndex = job.completed_batches; // próximo batch a procesar (0-based)
+    const chunk = tickers.slice(batchIndex * BATCH_SIZE, batchIndex * BATCH_SIZE + BATCH_SIZE);
 
-        // Esperar entre batches (excepto el primero)
-        if (i > 0) await new Promise(r => setTimeout(r, DELAY_MS));
+    if (chunk.length === 0) {
+        return { done: true, gaps: [] };
+    }
 
-        let batchData;
-        try {
-            batchData = await fetchBatch(chunk, twelvedataKey, outputsize);
-        } catch(e) {
-            console.error('Error en batch fetch:', e);
-            if (jobId && env?.DB) {
-                try { await env.DB.prepare("UPDATE jobs SET completed_batches = completed_batches + 1 WHERE id = ?").bind(jobId).run(); } catch (_) {}
-            }
+    const twelvedataKey = env.TWELVEDATA_API_KEY;
+    let outputsize;
+    if (job.type === 'daily_update') {
+        outputsize = 5; // colchón para no perder días si falló un tick de cron
+    } else {
+        const from = job.from_date ? new Date(job.from_date) : new Date('2025-01-01');
+        const to = job.to_date ? new Date(job.to_date) : new Date();
+        const days = Math.ceil((to - from) / 86400000) + 5;
+        outputsize = Math.min(Math.max(days, 30), 5000);
+    }
+
+    let allGaps = [];
+    let batchData = {};
+    try {
+        batchData = await fetchBatch(chunk, twelvedataKey, outputsize);
+    } catch (e) {
+        console.error('Error en batch fetch:', e);
+    }
+
+    for (const ticker of chunk) {
+        const tickerData = batchData[ticker];
+        if (!tickerData || tickerData.status === 'error' || !tickerData.values?.length) {
+            console.error(`Error o sin datos para ${ticker}:`, tickerData?.message || 'sin valores');
             continue;
         }
 
-        for (const ticker of chunk) {
-            const tickerData = batchData[ticker];
-            if (!tickerData || tickerData.status === 'error' || !tickerData.values?.length) {
-                console.error(`Error o sin datos para ${ticker}:`, tickerData?.message || 'sin valores');
-                continue;
-            }
+        const sortedData = [...tickerData.values].reverse(); // más antiguo → más reciente
 
-            const sortedData = [...tickerData.values].reverse(); // más antiguo → más reciente
-
-            // 1. Guardar precios en BD con INSERT OR IGNORE (nunca duplica)
-            if (env?.DB) {
-                const stmt = env.DB.prepare("INSERT OR IGNORE INTO daily_prices (ticker, date, open_price, high_price, low_price, close_price, volume) VALUES (?, ?, ?, ?, ?, ?, ?)");
-                const batchStmts = tickerData.values.map(day =>
-                    stmt.bind(ticker, day.datetime, parseFloat(day.open), parseFloat(day.high), parseFloat(day.low), parseFloat(day.close), parseInt(day.volume || 0))
-                );
-                try { await env.DB.batch(batchStmts); } catch(e) { console.error("Error insertando precios:", e); }
-            }
-
-            // 2. Analizar gaps
-            const gaps = analyzeGaps(ticker, sortedData);
-            allGaps.push(...gaps);
-
-            // 3. Guardar gaps en BD (OR REPLACE: evita duplicados si se re-procesa el mismo rango)
-            if (env?.DB && gaps.length > 0) {
-                const stmt = env.DB.prepare("INSERT OR REPLACE INTO gaps_history (ticker, type, gap_date, closest_point, farthest_point, dist_closest_pct, dist_farthest_pct, width_pct, current_close, analysis_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                const batchStmts = gaps.map(g =>
-                    stmt.bind(g.ticker, g.type, g.gap_date, g.closest_point, g.farthest_point, g.dist_closest_pct, g.dist_farthest_pct, g.width_pct, g.current_close, g.analysis_date)
-                );
-                try { await env.DB.batch(batchStmts); } catch(e) { console.error("Error guardando historial de gaps:", e); }
-            }
+        // 1. Guardar precios en BD con INSERT OR IGNORE (nunca duplica)
+        if (env?.DB) {
+            const stmt = env.DB.prepare("INSERT OR IGNORE INTO daily_prices (ticker, date, open_price, high_price, low_price, close_price, volume) VALUES (?, ?, ?, ?, ?, ?, ?)");
+            const batchStmts = tickerData.values.map(day =>
+                stmt.bind(ticker, day.datetime, parseFloat(day.open), parseFloat(day.high), parseFloat(day.low), parseFloat(day.close), parseInt(day.volume || 0))
+            );
+            try { await env.DB.batch(batchStmts); } catch (e) { console.error("Error insertando precios:", e); }
         }
 
-        if (jobId && env?.DB) {
-            try { await env.DB.prepare("UPDATE jobs SET completed_batches = completed_batches + 1 WHERE id = ?").bind(jobId).run(); } catch (_) {}
+        // 2. Analizar gaps
+        const gaps = analyzeGaps(ticker, sortedData);
+        allGaps.push(...gaps);
+
+        // 3. Guardar gaps en BD (OR REPLACE: evita duplicados si se re-procesa el mismo rango)
+        if (env?.DB && gaps.length > 0) {
+            const stmt = env.DB.prepare("INSERT OR REPLACE INTO gaps_history (ticker, type, gap_date, closest_point, farthest_point, dist_closest_pct, dist_farthest_pct, width_pct, current_close, analysis_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            const batchStmts = gaps.map(g =>
+                stmt.bind(g.ticker, g.type, g.gap_date, g.closest_point, g.farthest_point, g.dist_closest_pct, g.dist_farthest_pct, g.width_pct, g.current_close, g.analysis_date)
+            );
+            try { await env.DB.batch(batchStmts); } catch (e) { console.error("Error guardando historial de gaps:", e); }
         }
     }
 
-    return allGaps;
+    const newCompleted = batchIndex + 1;
+    await env.DB.prepare("UPDATE jobs SET completed_batches = ? WHERE id = ?").bind(newCompleted, job.id).run();
+
+    return { done: newCompleted >= totalBatches, gaps: allGaps };
 }
 
 // Recalcula gaps leyendo solo lo ya guardado en D1 — nunca llama a TwelveData.
@@ -218,23 +229,22 @@ async function maybeStartNextJob(env, ctx) {
     }
 }
 
+// Avanza un job UN batch. Si el job tiene más batches pendientes, no los procesa acá:
+// simplemente deja el job en 'running' con su progreso actualizado y retorna — el próximo
+// tick de cron (cada 1 min) lo va a retomar exactamente donde quedó. Solo al llegar al
+// último batch se ejecuta la finalización (recálculo de gaps + IA + notificaciones para
+// daily_update, marcar 'done', y arrancar el siguiente job en cola).
 async function runJob(job, env, ctx) {
-    const tickers = job.tickers.split(',').map(t => t.trim()).filter(Boolean);
-    await env.DB.prepare("UPDATE jobs SET status='running', started_at=CURRENT_TIMESTAMP WHERE id=?").bind(job.id).run();
+    if (job.status !== 'running') {
+        await env.DB.prepare("UPDATE jobs SET status='running', started_at=CURRENT_TIMESTAMP WHERE id=?").bind(job.id).run();
+    }
 
+    let done = false;
     try {
-        const twelvedataKey = env.TWELVEDATA_API_KEY;
-        let outputsize;
-        if (job.type === 'daily_update') {
-            outputsize = 5; // colchón para no perder días si falló un tick de cron
-        } else {
-            const from = job.from_date ? new Date(job.from_date) : new Date('2025-01-01');
-            const to = job.to_date ? new Date(job.to_date) : new Date();
-            const days = Math.ceil((to - from) / 86400000) + 5;
-            outputsize = Math.min(Math.max(days, 30), 5000);
-        }
+        const result = await processJobBatch(job, env);
+        done = result.done;
 
-        await processTickers(tickers, twelvedataKey, env, outputsize, job.id);
+        if (!done) return; // se retoma en el próximo tick de cron
 
         if (job.type === 'daily_update') {
             const activeTickers = await getActiveTickers(env);
@@ -264,9 +274,10 @@ async function runJob(job, env, ctx) {
         try {
             await env.DB.prepare("UPDATE jobs SET status='error', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=?").bind(String(e.message || e), job.id).run();
         } catch (_) {}
+        return;
     }
 
-    // Drenado secuencial: si hay otro job en cola, arrancarlo
+    // Job recién terminado: si hay otro en cola, arrancarlo (primer batch, inmediato)
     const next = await getNextQueuedJob(env);
     if (next) {
         ctx.waitUntil(runJob(next, env, ctx));
@@ -523,9 +534,13 @@ export default {
 
     async scheduled(event, env, ctx) {
         try {
-            await logAudit(env.DB, 'Cron Tick', `Cron: ${event.cron}`);
-
-            if (await hasRunningJob(env)) return;
+            // Prioridad 1: si hay un job 'running' con batches pendientes (quedó a medio
+            // camino en el tick anterior), retomarlo por exactamente un batch más.
+            const runningJob = await env.DB.prepare("SELECT * FROM jobs WHERE status = 'running' LIMIT 1").first();
+            if (runningJob) {
+                await runJob(runningJob, env, ctx);
+                return;
+            }
 
             const queuedJob = await getNextQueuedJob(env);
             if (queuedJob) {
