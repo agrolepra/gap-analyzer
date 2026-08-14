@@ -206,6 +206,37 @@ async function getActiveTickers(env) {
     return results.map(r => r.ticker);
 }
 
+// Genera (o devuelve el ya existente) el resumen de IA de una jornada de mercado ya
+// cerrada. Nunca llama a Gemini dos veces para la misma summary_date — así se evita
+// gastar tokens de más y el botón manual siempre puede clickearse sin riesgo. Si ya
+// existe, se devuelve tal cual (con su trigger_type original, sin pisarlo).
+async function ensureDailySummary(env, targetDate, triggerType) {
+    if (!targetDate) return { row: null, wasCached: false };
+
+    const existing = await env.DB.prepare(
+        "SELECT * FROM ai_summaries WHERE summary_date = ? ORDER BY generated_at DESC LIMIT 1"
+    ).bind(targetDate).first();
+    if (existing) return { row: existing, wasCached: true };
+
+    if (!env.GEMINI_API_KEY) return { row: null, wasCached: false };
+
+    const { results: gaps } = await env.DB.prepare(
+        "SELECT * FROM gaps_history WHERE analysis_date = ?"
+    ).bind(targetDate).all();
+    if (!gaps.length) return { row: null, wasCached: false };
+
+    const gapsCamel = gapsToCamel(gaps);
+    const summary = await generateSummary(gapsCamel, env.GEMINI_API_KEY);
+    if (!summary) return { row: null, wasCached: false };
+
+    const insertResult = await env.DB.prepare(
+        "INSERT INTO ai_summaries (summary, gaps_count, trigger_type, summary_date) VALUES (?, ?, ?, ?)"
+    ).bind(summary, gaps.length, triggerType, targetDate).run();
+
+    const row = await env.DB.prepare("SELECT * FROM ai_summaries WHERE id = ?").bind(insertResult.meta.last_row_id).first();
+    return { row, wasCached: false };
+}
+
 // ----- Sistema de jobs (backfill / daily_update) -----
 
 async function enqueueJob(env, { type, tickers, from_date, to_date }) {
@@ -261,27 +292,28 @@ async function runJob(job, env, ctx) {
 
         if (job.type === 'daily_update') {
             const activeTickers = await getActiveTickers(env);
-            const gaps = await recalculateGaps(env, activeTickers);
-            const gapsCamel = gapsToCamel(gaps);
-
-            let aiSummary = null;
-            if (env.GEMINI_API_KEY && gaps.length > 0) {
-                aiSummary = await generateSummary(gapsCamel, env.GEMINI_API_KEY);
-                if (aiSummary) {
-                    await env.DB.prepare(
-                        "INSERT INTO ai_summaries (summary, gaps_count, trigger_type) VALUES (?, ?, 'auto')"
-                    ).bind(aiSummary, gaps.length).run();
-                }
-            }
-
-            if (gaps.length > 0 && aiSummary) {
-                await sendEmail(aiSummary, env);
-                await sendWhatsApp(aiSummary, env);
-            }
+            await recalculateGaps(env, activeTickers);
         }
 
         await env.DB.prepare("UPDATE jobs SET status='done', completed_at=CURRENT_TIMESTAMP WHERE id=?").bind(job.id).run();
         await logAudit(env.DB, `Job ${job.type} completado`, `Tickers: ${job.tickers}`);
+
+        // El resumen de IA se maneja aparte, desacoplado del estado del job: si Gemini
+        // tarda o falla, el job de ingesta ya quedó 'done' de forma segura, y el cron
+        // reintenta el resumen solo (ver scheduled()) sin volver a tocar la ingesta.
+        if (job.type === 'daily_update') {
+            await env.DB.prepare(
+                "INSERT INTO app_settings (key, value) VALUES ('last_completed_market_date', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            ).bind(job.to_date).run();
+
+            ctx.waitUntil((async () => {
+                const { row: summaryRow } = await ensureDailySummary(env, job.to_date, 'auto');
+                if (summaryRow) {
+                    await sendEmail(summaryRow.summary, env);
+                    await sendWhatsApp(summaryRow.summary, env);
+                }
+            })());
+        }
     } catch (e) {
         console.error('Error ejecutando job:', e);
         try {
@@ -370,30 +402,30 @@ export default {
             }
         }
 
-        // ---- Resumen de IA ----
+        // ---- Resumen de IA: una sola generación por jornada cerrada, cacheada ----
         if (url.pathname === '/ai-summary' && request.method === 'POST') {
             try {
-                let overrideKey = null;
-                try { const body = await request.json(); if (body?.aiKey) overrideKey = body.aiKey; } catch (_) {}
-                const geminiKey = overrideKey || env.GEMINI_API_KEY;
-                if (!geminiKey) return json({ error: 'No hay clave de Gemini configurada' }, 400);
+                if (!env.GEMINI_API_KEY) return json({ error: 'No hay clave de Gemini configurada' }, 400);
 
-                const { results: recentGaps } = await env.DB.prepare(
-                    "SELECT * FROM gaps_history WHERE analysis_date = (SELECT MAX(analysis_date) FROM gaps_history)"
-                ).all();
-                if (!recentGaps.length) {
-                    return json({ error: 'No hay gaps para resumir. Recalculá primero.' }, 400);
+                const settingsRow = await env.DB.prepare(
+                    "SELECT value FROM app_settings WHERE key = 'last_completed_market_date'"
+                ).first();
+                const targetDate = settingsRow?.value;
+                if (!targetDate) {
+                    return json({ error: 'Todavía no hay una jornada de mercado cerrada. Se genera automáticamente después del cierre.' }, 400);
                 }
 
-                const gapsCamel = gapsToCamel(recentGaps);
-                const summary = await generateSummary(gapsCamel, geminiKey);
-                if (!summary) return json({ error: 'No se pudo generar el resumen' }, 500);
+                const { row, wasCached } = await ensureDailySummary(env, targetDate, 'manual');
+                if (!row) return json({ error: 'No se pudo generar el resumen. Puede ser un problema temporal de Gemini — probá de nuevo en un rato.' }, 500);
 
-                await env.DB.prepare(
-                    "INSERT INTO ai_summaries (summary, gaps_count, trigger_type) VALUES (?, ?, 'manual')"
-                ).bind(summary, gapsCamel.length).run();
-
-                return json({ summary, gapsCount: gapsCamel.length });
+                return json({
+                    summary: row.summary,
+                    gapsCount: row.gaps_count,
+                    summaryDate: row.summary_date,
+                    triggerType: row.trigger_type,
+                    generatedAt: row.generated_at,
+                    wasCached,
+                });
             } catch (e) {
                 return json({ error: e.message }, 500);
             }
@@ -559,6 +591,27 @@ export default {
             if (queuedJob) {
                 await runJob(queuedJob, env, ctx);
                 return;
+            }
+
+            // Prioridad 3: si la última jornada cerrada todavía no tiene resumen de IA
+            // (Gemini falló o tardó demasiado la vez anterior), reintentar. Como
+            // ensureDailySummary es idempotente, esto es seguro de reintentar cada
+            // minuto hasta que salga bien — sin gastar tokens de más una vez logrado.
+            const lastCompletedRow = await env.DB.prepare(
+                "SELECT value FROM app_settings WHERE key = 'last_completed_market_date'"
+            ).first();
+            if (lastCompletedRow?.value) {
+                const hasSummary = await env.DB.prepare(
+                    "SELECT id FROM ai_summaries WHERE summary_date = ?"
+                ).bind(lastCompletedRow.value).first();
+                if (!hasSummary) {
+                    const { row: summaryRow } = await ensureDailySummary(env, lastCompletedRow.value, 'auto');
+                    if (summaryRow) {
+                        await sendEmail(summaryRow.summary, env);
+                        await sendWhatsApp(summaryRow.summary, env);
+                    }
+                    return;
+                }
             }
 
             const settingsRow = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'update_hour_utc'").first();

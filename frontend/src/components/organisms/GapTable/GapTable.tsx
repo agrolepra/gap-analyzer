@@ -118,7 +118,7 @@ export const GapTable: React.FC<GapTableProps> = ({ data, showFilters = true }) 
               <th onClick={() => handleSort('ticker')}>Ticker {sortArrow('ticker')}</th>
               <th onClick={() => handleSort('type')}>Tipo {sortArrow('type')}</th>
               <th className={styles.colDate} onClick={() => handleSort('date')}>Fecha Gap {sortArrow('date')}</th>
-              <th className={styles.num} onClick={() => handleSort('currentClose')}>Price {sortArrow('currentClose')}</th>
+              <th className={styles.num} onClick={() => handleSort('currentClose')}>Cierre Actual {sortArrow('currentClose')}</th>
               <th className={styles.num} onClick={() => handleSort('closestPoint')}>Punto Cercano {sortArrow('closestPoint')}</th>
               <th className={styles.num} onClick={() => handleSort('farthestPoint')}>Punto Lejano {sortArrow('farthestPoint')}</th>
               <th className={styles.num} onClick={() => handleSort('distClosestPct')}>% Dist. Cercano {sortArrow('distClosestPct')}</th>

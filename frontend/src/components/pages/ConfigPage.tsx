@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { Plus } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Plus, Search, Upload } from 'lucide-react';
 import { FormField } from '../molecules/FormField';
 import { Input } from '../atoms/Input';
 import { Toggle } from '../atoms/Toggle';
@@ -42,6 +42,11 @@ export const ConfigPage: React.FC = () => {
   const [newTicker, setNewTicker] = useState('');
   const [addingTicker, setAddingTicker] = useState(false);
   const [togglingTicker, setTogglingTicker] = useState<string | null>(null);
+  const [filterText, setFilterText] = useState('');
+
+  const [showBulkImport, setShowBulkImport] = useState(false);
+  const [bulkText, setBulkText] = useState('');
+  const [bulkImporting, setBulkImporting] = useState(false);
 
   const [updateHourBA, setUpdateHourBA] = useState(DEFAULT_UPDATE_HOUR_BA);
   const [savingHour, setSavingHour] = useState(false);
@@ -74,19 +79,27 @@ export const ConfigPage: React.FC = () => {
 
   useEffect(() => { loadAll(); }, []);
 
+  // POST /tickers para un solo símbolo. El backend ya es idempotente (guards
+  // anti-duplicado, reactivación con catch-up), así que es seguro reusar esto
+  // tanto para el alta individual como para cada ticker de una importación masiva.
+  const submitTicker = async (ticker: string): Promise<{ ticker: string; status: string }> => {
+    const res = await authFetch(`${WORKER}/tickers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticker }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Error al agregar ${ticker}`);
+    return data;
+  };
+
   const addTicker = async () => {
     const ticker = newTicker.trim().toUpperCase();
     if (!ticker) return;
     setAddingTicker(true);
     setError(null);
     try {
-      const res = await authFetch(`${WORKER}/tickers`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Error al agregar el ticker');
+      const data = await submitTicker(ticker);
 
       if (data.status === 'created') {
         showToast(`Ticker ${ticker} agregado, iniciando carga histórica…`, 'success');
@@ -102,6 +115,41 @@ export const ConfigPage: React.FC = () => {
       setError(err.message || 'Error desconocido al agregar el ticker.');
     } finally {
       setAddingTicker(false);
+    }
+  };
+
+  const bulkImport = async () => {
+    const parsed = Array.from(new Set(
+      bulkText.split(/[\n,;\s]+/).map(t => t.trim().toUpperCase()).filter(Boolean)
+    ));
+    if (parsed.length === 0) return;
+
+    setBulkImporting(true);
+    setError(null);
+    let created = 0, reactivated = 0, alreadyActive = 0, failed = 0;
+    try {
+      const results = await Promise.allSettled(parsed.map(submitTicker));
+      for (const r of results) {
+        if (r.status === 'rejected') { failed++; continue; }
+        if (r.value.status === 'created') created++;
+        else if (r.value.status === 'reactivated') reactivated++;
+        else alreadyActive++;
+      }
+
+      const parts = [];
+      if (created > 0) parts.push(`${created} agregados`);
+      if (reactivated > 0) parts.push(`${reactivated} reactivados`);
+      if (alreadyActive > 0) parts.push(`${alreadyActive} ya activos`);
+      if (failed > 0) parts.push(`${failed} con error`);
+      showToast(`Importación: ${parts.join(', ')}`, failed > 0 ? 'error' : 'success');
+
+      setBulkText('');
+      setShowBulkImport(false);
+      await loadAll();
+    } catch (err: any) {
+      setError(err.message || 'Error desconocido en la importación masiva.');
+    } finally {
+      setBulkImporting(false);
     }
   };
 
@@ -125,6 +173,12 @@ export const ConfigPage: React.FC = () => {
       setTogglingTicker(null);
     }
   };
+
+  const filteredTickers = useMemo(() => {
+    const q = filterText.trim().toUpperCase();
+    if (!q) return tickers;
+    return tickers.filter(t => t.ticker.includes(q));
+  }, [tickers, filterText]);
 
   const saveUpdateHour = async () => {
     setSavingHour(true);
@@ -173,15 +227,52 @@ export const ConfigPage: React.FC = () => {
             <Plus size={16} style={{ marginRight: '6px' }} />
             Agregar
           </Button>
+          <Button variant="secondary" onClick={() => setShowBulkImport(v => !v)}>
+            <Upload size={16} style={{ marginRight: '6px' }} />
+            Importar varios
+          </Button>
+        </div>
+
+        {showBulkImport && (
+          <div className={styles.bulkImportBox}>
+            <Input
+              multiline
+              placeholder={'Pegá varios tickers separados por coma, espacio o salto de línea.\nEj: AAPL, MSFT, TSLA'}
+              value={bulkText}
+              onChange={(e) => setBulkText(e.target.value)}
+              style={{ minHeight: '90px', width: '100%' }}
+            />
+            <div className={styles.actions} style={{ marginTop: '12px' }}>
+              <Button variant="primary" onClick={bulkImport} isLoading={bulkImporting} disabled={!bulkText.trim()}>
+                Importar todos
+              </Button>
+            </div>
+          </div>
+        )}
+
+        <div className={styles.searchRow}>
+          <Search size={16} className={styles.searchIcon} />
+          <Input
+            placeholder="Buscar ticker..."
+            value={filterText}
+            onChange={(e) => setFilterText(e.target.value)}
+            className={styles.searchInput}
+          />
+          {tickers.length > 0 && (
+            <span className={styles.tickerCount}>{filteredTickers.length} / {tickers.length}</span>
+          )}
         </div>
 
         {loading ? (
           <div className={styles.loadingState}>Cargando tickers...</div>
         ) : (
-          <div className={styles.tickerList}>
+          <div className={styles.tickerGrid}>
             {tickers.length === 0 && <p className={styles.sectionDesc}>Todavía no hay tickers configurados.</p>}
-            {tickers.map(t => (
-              <div key={t.ticker} className={styles.tickerRow}>
+            {tickers.length > 0 && filteredTickers.length === 0 && (
+              <p className={styles.sectionDesc}>Ningún ticker coincide con "{filterText}".</p>
+            )}
+            {filteredTickers.map(t => (
+              <div key={t.ticker} className={styles.tickerChip}>
                 <span className={`${styles.tickerName} ${t.active ? '' : styles.tickerInactive}`}>{t.ticker}</span>
                 <Toggle
                   checked={t.active === 1}

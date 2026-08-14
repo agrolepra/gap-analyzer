@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS ai_summaries (
     summary TEXT NOT NULL,
     gaps_count INTEGER NOT NULL,
     trigger_type TEXT NOT NULL,
+    summary_date TEXT,
     generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

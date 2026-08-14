@@ -14,6 +14,7 @@ interface AiSummaryRow {
   summary: string;
   gaps_count: number;
   trigger_type: 'manual' | 'auto';
+  summary_date: string | null;
   generated_at: string;
 }
 
@@ -108,10 +109,11 @@ export const DashboardPage: React.FC = () => {
       setAiSummary({
         summary: data.summary,
         gaps_count: data.gapsCount,
-        trigger_type: 'manual',
-        generated_at: new Date().toISOString(),
+        trigger_type: data.triggerType,
+        summary_date: data.summaryDate,
+        generated_at: data.generatedAt,
       });
-      showToast('Resumen IA generado', 'success');
+      showToast(data.wasCached ? 'Ya existía el resumen de hoy (no se gastan tokens de más)' : 'Resumen IA generado', data.wasCached ? 'info' : 'success');
     } catch (err: any) {
       setError(err.message || 'Error desconocido al generar el resumen.');
     } finally {
@@ -200,6 +202,11 @@ export const DashboardPage: React.FC = () => {
             </div>
             {aiSummary ? (
               <>
+                {aiSummary.summary_date && (
+                  <p className={styles.aiDateBadge}>
+                    Cierre del {new Date(aiSummary.summary_date).toLocaleDateString()}
+                  </p>
+                )}
                 <p className={styles.aiText}>{aiSummary.summary}</p>
                 <p className={styles.aiMeta}>
                   {aiSummary.trigger_type === 'auto' ? 'Generado automáticamente' : 'Generado manualmente'} · {new Date(aiSummary.generated_at).toLocaleString()}
@@ -207,7 +214,7 @@ export const DashboardPage: React.FC = () => {
               </>
             ) : (
               <p className={styles.aiText} style={{ color: 'var(--text-muted)' }}>
-                Todavía no hay un resumen de IA generado.
+                Todavía no hay un resumen de IA generado. Se genera solo después del cierre de mercado.
               </p>
             )}
           </div>
