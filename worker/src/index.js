@@ -93,6 +93,24 @@ const BATCH_SIZE = 8; // máx 8 symbols por request en plan gratuito
 // siguiente invocación (disparada por el cron cada 1 min), lo que respeta sobradamente
 // el límite de 8 req/min y evita que el runtime corte una ejecución larga a mitad de camino
 // (eso fue justamente lo que dejaba jobs grandes trabados en 'running' para siempre).
+// Persiste el snapshot de gaps activos de un ticker para una fecha de análisis dada.
+// Borra primero lo que hubiera para (ticker, analysisDate) y reinserta el set activo
+// actual — incluso si quedó vacío. Antes se usaba INSERT OR REPLACE directo, que nunca
+// borra: si un gap se cerraba más tarde en el mismo día (ej. TwelveData revisa el precio
+// de "hoy" y el mínimo baja más), la fila vieja quedaba huérfana en gaps_history para
+// siempre, mostrando un gap que ya no existía.
+async function saveGapsSnapshot(env, ticker, analysisDate, gaps) {
+    if (!env?.DB || !analysisDate) return;
+    const stmts = [env.DB.prepare("DELETE FROM gaps_history WHERE ticker = ? AND analysis_date = ?").bind(ticker, analysisDate)];
+    if (gaps.length > 0) {
+        const insertStmt = env.DB.prepare("INSERT INTO gaps_history (ticker, type, gap_date, closest_point, farthest_point, dist_closest_pct, dist_farthest_pct, width_pct, current_close, analysis_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        stmts.push(...gaps.map(g =>
+            insertStmt.bind(g.ticker, g.type, g.gap_date, g.closest_point, g.farthest_point, g.dist_closest_pct, g.dist_farthest_pct, g.width_pct, g.current_close, g.analysis_date)
+        ));
+    }
+    try { await env.DB.batch(stmts); } catch (e) { console.error("Error guardando historial de gaps:", e); }
+}
+
 async function processJobBatch(job, env) {
     const tickers = job.tickers.split(',').map(t => t.trim()).filter(Boolean);
     const totalBatches = Math.ceil(tickers.length / BATCH_SIZE);
@@ -162,14 +180,11 @@ async function processJobBatch(job, env) {
         const gaps = analyzeGaps(ticker, sortedData);
         allGaps.push(...gaps);
 
-        // 3. Guardar gaps en BD (OR REPLACE: evita duplicados si se re-procesa el mismo rango)
-        if (env?.DB && gaps.length > 0) {
-            const stmt = env.DB.prepare("INSERT OR REPLACE INTO gaps_history (ticker, type, gap_date, closest_point, farthest_point, dist_closest_pct, dist_farthest_pct, width_pct, current_close, analysis_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            const batchStmts = gaps.map(g =>
-                stmt.bind(g.ticker, g.type, g.gap_date, g.closest_point, g.farthest_point, g.dist_closest_pct, g.dist_farthest_pct, g.width_pct, g.current_close, g.analysis_date)
-            );
-            try { await env.DB.batch(batchStmts); } catch (e) { console.error("Error guardando historial de gaps:", e); }
-        }
+        // 3. Guardar snapshot de gaps del día para este ticker (borra + reinserta,
+        // así el precio de "hoy" se puede actualizar varias veces por día sin dejar
+        // gaps huérfanos si alguno se cierra entre una corrida y la siguiente).
+        const analysisDate = sortedData[sortedData.length - 1]?.datetime;
+        await saveGapsSnapshot(env, ticker, analysisDate, gaps);
     }
 
     const newCompleted = batchIndex + 1;
@@ -198,13 +213,8 @@ async function recalculateGaps(env, tickerList) {
         const gaps = analyzeGaps(ticker, mapped);
         allGaps.push(...gaps);
 
-        if (gaps.length > 0) {
-            const stmt = env.DB.prepare("INSERT OR REPLACE INTO gaps_history (ticker, type, gap_date, closest_point, farthest_point, dist_closest_pct, dist_farthest_pct, width_pct, current_close, analysis_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            const batchStmts = gaps.map(g =>
-                stmt.bind(g.ticker, g.type, g.gap_date, g.closest_point, g.farthest_point, g.dist_closest_pct, g.dist_farthest_pct, g.width_pct, g.current_close, g.analysis_date)
-            );
-            try { await env.DB.batch(batchStmts); } catch(e) { console.error("Error guardando historial de gaps:", e); }
-        }
+        const analysisDate = mapped[mapped.length - 1]?.date;
+        await saveGapsSnapshot(env, ticker, analysisDate, gaps);
     }
     return allGaps;
 }
@@ -675,12 +685,36 @@ export default {
 
         if (url.pathname === '/history') {
             try {
-                const { results } = await env.DB.prepare("SELECT * FROM gaps_history ORDER BY analysis_date DESC LIMIT 500").all();
+                // LIMIT alto (no 0): es un piso de seguridad, no una paginación real.
+                // Con ~75 tickers activos y snapshots diarios, un LIMIT bajo (antes 500)
+                // se quedaba corto en un par de días y el frontend, que ordena por
+                // analysis_date DESC, empezaba a perder días completos más viejos.
+                const { results } = await env.DB.prepare("SELECT * FROM gaps_history ORDER BY analysis_date DESC LIMIT 5000").all();
                 return new Response(JSON.stringify({ results }), {
                     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
                 });
             } catch (e) {
                 return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: corsHeaders });
+            }
+        }
+
+        // Conteo de gaps por fecha de análisis, agregado en SQL — a diferencia de /history
+        // no se degrada nunca por un LIMIT: sirve para el gráfico de tendencia del Dashboard,
+        // que necesita el total real por día, no solo lo que entra en una página de filas.
+        if (url.pathname === '/history/summary') {
+            try {
+                const { results } = await env.DB.prepare(
+                    `SELECT gh.analysis_date, COUNT(*) as count
+                     FROM gaps_history gh
+                     JOIN tickers t ON t.ticker = gh.ticker
+                     WHERE t.active = 1
+                     GROUP BY gh.analysis_date
+                     ORDER BY gh.analysis_date DESC
+                     LIMIT 30`
+                ).all();
+                return json({ results });
+            } catch (e) {
+                return json({ error: e.message }, 500);
             }
         }
 

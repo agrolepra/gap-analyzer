@@ -36,6 +36,7 @@ export const DashboardPage: React.FC = () => {
   const { showToast } = useToast();
 
   const [history, setHistory] = useState<HistoryRow[]>([]);
+  const [trendSummary, setTrendSummary] = useState<{ analysis_date: string; count: number }[]>([]);
   const [activeTickerCount, setActiveTickerCount] = useState<number>(0);
   const [aiSummary, setAiSummary] = useState<AiSummaryRow | null>(null);
   const [summaryHistory, setSummaryHistory] = useState<AiSummaryHistoryRow[]>([]);
@@ -49,12 +50,13 @@ export const DashboardPage: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const [historyRes, tickersRes, summaryRes, settingsRes, summaryHistoryRes] = await Promise.all([
+      const [historyRes, tickersRes, summaryRes, settingsRes, summaryHistoryRes, trendRes] = await Promise.all([
         authFetch(`${WORKER}/history`),
         authFetch(`${WORKER}/tickers`),
         authFetch(`${WORKER}/ai-summary/latest`),
         authFetch(`${WORKER}/settings`),
         authFetch(`${WORKER}/ai-summary/history`),
+        authFetch(`${WORKER}/history/summary`),
       ]);
 
       const tickersData = await tickersRes.json();
@@ -77,6 +79,9 @@ export const DashboardPage: React.FC = () => {
 
       const summaryHistoryData = await summaryHistoryRes.json();
       if (summaryHistoryRes.ok) setSummaryHistory(summaryHistoryData.summaries || []);
+
+      const trendData = await trendRes.json();
+      if (trendRes.ok) setTrendSummary(trendData.results || []);
     } catch (err: any) {
       setError(err.message || 'Error desconocido al cargar el dashboard.');
     } finally {
@@ -103,15 +108,14 @@ export const DashboardPage: React.FC = () => {
   }, [currentGaps]);
 
   const trendData = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const r of history) {
-      counts.set(r.analysis_date, (counts.get(r.analysis_date) || 0) + 1);
-    }
-    return Array.from(counts.entries())
-      .sort((a, b) => a[0].localeCompare(b[0]))
+    return [...trendSummary]
+      .sort((a, b) => a.analysis_date.localeCompare(b.analysis_date))
       .slice(-14)
-      .map(([date, count]) => ({ date: date.slice(5), gaps: count }));
-  }, [history]);
+      .map(({ analysis_date, count }) => {
+        const [, mm, dd] = analysis_date.split('-');
+        return { date: `${dd}-${mm}`, gaps: count };
+      });
+  }, [trendSummary]);
 
   // Ya hay un resumen para el último cierre de mercado conocido: no hace falta (ni se debe)
   // generar otro hasta que cierre la próxima jornada. Si todavía no cerró ningún mercado
