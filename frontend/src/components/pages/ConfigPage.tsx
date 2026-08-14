@@ -127,30 +127,25 @@ export const ConfigPage: React.FC = () => {
 
     setBulkImporting(true);
     setError(null);
-    let created = 0, reactivated = 0, alreadyActive = 0, failed = 0;
     try {
-      // Secuencial, no en paralelo: cada alta nueva valida el ticker contra
-      // TwelveData, y esas llamadas comparten el mismo límite de 8 req/min que
-      // usa el resto del sistema (ingesta diaria, backfills). Mandarlas todas
-      // juntas las haría chocar entre sí.
-      for (const ticker of parsed) {
-        try {
-          const data = await submitTicker(ticker);
-          if (data.status === 'created') created++;
-          else if (data.status === 'reactivated') reactivated++;
-          else alreadyActive++;
-        } catch {
-          failed++;
-        }
-        await new Promise(r => setTimeout(r, 2000));
-      }
+      // Un solo request: el backend valida en batches de hasta 8 tickers por
+      // llamada a TwelveData (igual que la ingesta) y encola un solo job de
+      // backfill combinado para los nuevos válidos — ya respeta el límite de
+      // 8 req/min sin necesidad de espaciar nada acá.
+      const res = await authFetch(`${WORKER}/tickers/bulk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tickers: parsed }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Error en la importación masiva');
 
       const parts = [];
-      if (created > 0) parts.push(`${created} agregados`);
-      if (reactivated > 0) parts.push(`${reactivated} reactivados`);
-      if (alreadyActive > 0) parts.push(`${alreadyActive} ya activos`);
-      if (failed > 0) parts.push(`${failed} inválidos o con error`);
-      showToast(`Importación: ${parts.join(', ')}`, failed > 0 ? 'error' : 'success');
+      if (data.created?.length) parts.push(`${data.created.length} agregados`);
+      if (data.reactivated?.length) parts.push(`${data.reactivated.length} reactivados`);
+      if (data.alreadyActive?.length) parts.push(`${data.alreadyActive.length} ya activos`);
+      if (data.invalid?.length) parts.push(`${data.invalid.length} inválidos (${data.invalid.join(', ')})`);
+      showToast(`Importación: ${parts.join(', ') || 'sin cambios'}`, data.invalid?.length ? 'error' : 'success');
 
       setBulkText('');
       setShowBulkImport(false);

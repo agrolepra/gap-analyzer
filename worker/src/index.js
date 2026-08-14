@@ -67,13 +67,18 @@ async function fetchBatch(tickerChunk, twelvedataKey, outputsize = 30) {
 // disponible en el plan) — si la validación misma falla por un problema de red,
 // no se le echa la culpa al ticker: se deja pasar y el backfill posterior es
 // quien determina si realmente hay datos.
+// Distingue "el símbolo no existe / no está disponible en el plan" (400/404 —
+// bloquea el alta) de un error transitorio nuestro como rate-limit o caída del
+// servicio (429/5xx — no bloquea, es problema de timing, no del ticker).
+function isDefinitelyInvalidSymbol(tickerData) {
+    if (!tickerData || tickerData.status !== 'error') return false;
+    return tickerData.code === 400 || tickerData.code === 404;
+}
+
 async function tickerExistsOnTwelveData(ticker, twelvedataKey) {
     try {
         const data = await fetchBatch([ticker], twelvedataKey, 1);
-        const tickerData = data[ticker];
-        if (!tickerData) return true; // respuesta rara pero no un error explícito: no bloquear
-        if (tickerData.status === 'error') return false;
-        return true;
+        return !isDefinitelyInvalidSymbol(data[ticker]);
     } catch (e) {
         console.error('Error validando ticker en TwelveData:', e);
         return true;
@@ -274,18 +279,36 @@ async function enqueueJob(env, { type, tickers, from_date, to_date }) {
     return result.meta.last_row_id;
 }
 
-async function hasRunningJob(env) {
-    const row = await env.DB.prepare("SELECT id FROM jobs WHERE status = 'running' LIMIT 1").first();
-    return !!row;
-}
-
 async function getNextQueuedJob(env) {
     return await env.DB.prepare("SELECT * FROM jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1").first();
 }
 
+// Reclama el próximo job en cola de forma atómica: el UPDATE solo tiene efecto
+// si en ese mismo instante no hay ningún otro job 'running'. Si dos requests
+// concurrentes (ej. dos altas de ticker casi simultáneas) llaman a esto a la
+// vez, SQLite serializa los UPDATEs — solo uno de los dos puede ganar la
+// carrera, el otro ve `changes=0` y no arranca nada. Esto reemplaza un patrón
+// "leer si hay algo corriendo, después arrancar" que tenía una ventana real
+// donde ambos requests podían pasar la lectura antes de que el otro escribiera
+// su 'running' — pasó de verdad (dos backfills de 1 ticker arrancando en el
+// mismo segundo, cada uno chocando con el otro contra TwelveData).
+async function claimNextQueuedJob(env) {
+    const next = await getNextQueuedJob(env);
+    if (!next) return null;
+
+    const result = await env.DB.prepare(
+        `UPDATE jobs SET status = 'running', started_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND status = 'queued'
+           AND NOT EXISTS (SELECT 1 FROM jobs WHERE status = 'running')`
+    ).bind(next.id).run();
+
+    if (result.meta.changes === 0) return null; // perdió la carrera
+
+    return await env.DB.prepare("SELECT * FROM jobs WHERE id = ?").bind(next.id).first();
+}
+
 async function maybeStartNextJob(env, ctx) {
-    if (await hasRunningJob(env)) return;
-    const job = await getNextQueuedJob(env);
+    const job = await claimNextQueuedJob(env);
     if (job) {
         ctx.waitUntil(runJob(job, env, ctx));
     }
@@ -352,17 +375,15 @@ async function runJob(job, env, ctx) {
 async function reactivateTicker(env, ticker) {
     await env.DB.prepare("UPDATE tickers SET active = 1 WHERE ticker = ?").bind(ticker).run();
 
-    const lastRow = await env.DB.prepare("SELECT MAX(date) as last_date FROM daily_prices WHERE ticker = ?").bind(ticker).first();
-    let fromDate = '2025-01-01';
-    if (lastRow?.last_date) {
-        const d = new Date(lastRow.last_date);
-        d.setUTCDate(d.getUTCDate() + 1);
-        fromDate = d.toISOString().split('T')[0];
-    }
-    const to = todayStr();
-    if (fromDate <= to) {
-        await enqueueJob(env, { type: 'backfill', tickers: [ticker], from_date: fromDate, to_date: to });
-    }
+    // Re-encola el backfill completo (2025-01-01 -> hoy), no solo desde el
+    // último dato guardado. Antes se calculaba el "hueco" mirando solo
+    // MAX(date), asumiendo que si el dato más reciente era de hoy ya estaba
+    // completo — pero eso es falso si el backfill inicial quedó truncado (ej.
+    // por una colisión de rate-limit) y falta historia al PRINCIPIO, no al
+    // final. El upsert de daily_prices hace que re-pedir días que ya están
+    // guardados sea gratis en términos de corrección (se pisan con el mismo
+    // valor), así que no hay costo real en no intentar ser "inteligente" acá.
+    await enqueueJob(env, { type: 'backfill', tickers: [ticker], from_date: '2025-01-01', to_date: todayStr() });
     await logAudit(env.DB, 'Ticker reactivado', ticker);
 }
 
@@ -502,6 +523,72 @@ export default {
             }
         }
 
+        // ---- Alta masiva: valida en batches de hasta 8 tickers por llamada a
+        // TwelveData (igual que fetchBatch para la ingesta) en vez de una
+        // llamada por ticker — evita chocar contra el límite de 8 req/min
+        // cuando se agregan muchos de una. Los válidos nuevos se encolan como
+        // UN SOLO job de backfill combinado (el mismo patrón ya usado para la
+        // ingesta diaria), en vez de un job separado por ticker.
+        if (url.pathname === '/tickers/bulk' && request.method === 'POST') {
+            try {
+                const body = await request.json();
+                const requested = Array.from(new Set(
+                    (body.tickers || []).map(t => String(t).trim().toUpperCase()).filter(Boolean)
+                ));
+                if (requested.length === 0) return json({ error: 'Se requiere una lista de tickers' }, 400);
+
+                const results = { created: [], reactivated: [], alreadyActive: [], invalid: [] };
+                const toValidate = [];
+
+                for (const ticker of requested) {
+                    const existing = await env.DB.prepare("SELECT active FROM tickers WHERE ticker = ?").bind(ticker).first();
+                    if (!existing) {
+                        toValidate.push(ticker);
+                    } else if (existing.active === 0) {
+                        await reactivateTicker(env, ticker);
+                        results.reactivated.push(ticker);
+                    } else {
+                        results.alreadyActive.push(ticker);
+                    }
+                }
+
+                const validNew = [];
+                for (let i = 0; i < toValidate.length; i += BATCH_SIZE) {
+                    const chunk = toValidate.slice(i, i + BATCH_SIZE);
+                    if (i > 0) await new Promise(r => setTimeout(r, 8000));
+
+                    let data = {};
+                    try {
+                        data = await fetchBatch(chunk, env.TWELVEDATA_API_KEY, 1);
+                    } catch (e) {
+                        console.error('Error validando batch de tickers:', e);
+                    }
+
+                    for (const ticker of chunk) {
+                        if (isDefinitelyInvalidSymbol(data[ticker])) {
+                            results.invalid.push(ticker);
+                        } else {
+                            validNew.push(ticker);
+                        }
+                    }
+                }
+
+                if (validNew.length > 0) {
+                    for (const ticker of validNew) {
+                        await env.DB.prepare("INSERT OR IGNORE INTO tickers (ticker, active) VALUES (?, 1)").bind(ticker).run();
+                    }
+                    await enqueueJob(env, { type: 'backfill', tickers: validNew, from_date: '2025-01-01', to_date: todayStr() });
+                    await logAudit(env.DB, 'Tickers agregados (bulk)', validNew.join(','));
+                    results.created = validNew;
+                }
+
+                await maybeStartNextJob(env, ctx);
+                return json(results);
+            } catch (e) {
+                return json({ error: e.message }, 500);
+            }
+        }
+
         const tickerPatchMatch = url.pathname.match(/^\/tickers\/([A-Za-z0-9.\-]+)$/);
         if (tickerPatchMatch && request.method === 'PATCH') {
             try {
@@ -610,7 +697,7 @@ export default {
                 return;
             }
 
-            const queuedJob = await getNextQueuedJob(env);
+            const queuedJob = await claimNextQueuedJob(env);
             if (queuedJob) {
                 await runJob(queuedJob, env, ctx);
                 return;
