@@ -194,8 +194,15 @@ async function processJobBatch(job, env) {
 }
 
 // Recalcula gaps leyendo solo lo ya guardado en D1 — nunca llama a TwelveData.
+// De paso computa el ciclo de vida agregado (originados/cubiertos/restantes) sobre
+// el mismo historial ya leído, y lo cachea en app_settings — así el KPI del
+// Dashboard (GET /gaps/stats) queda siempre sincronizado con gaps_history (se
+// computan en la misma pasada) y no tiene que releer+recalcular todo en cada
+// visita a la página.
 async function recalculateGaps(env, tickerList) {
     let allGaps = [];
+    let originated = 0, closedFully = 0, remainingTotal = 0, remainingPartial = 0;
+
     for (const ticker of tickerList) {
         const { results } = await env.DB.prepare(
             "SELECT date, open_price, high_price, low_price, close_price FROM daily_prices WHERE ticker = ? ORDER BY date ASC"
@@ -215,7 +222,27 @@ async function recalculateGaps(env, tickerList) {
 
         const analysisDate = mapped[mapped.length - 1]?.date;
         await saveGapsSnapshot(env, ticker, analysisDate, gaps);
+
+        const stats = computeGapLifecycle(ticker, mapped);
+        originated += stats.originated;
+        closedFully += stats.closedFully;
+        remainingTotal += stats.remainingTotal;
+        remainingPartial += stats.remainingPartial;
     }
+
+    const remaining = remainingTotal + remainingPartial;
+    const pct = (n) => (originated > 0 ? parseFloat(((n / originated) * 100).toFixed(1)) : 0);
+    const gapStatsCache = {
+        originated, closedFully, remaining, remainingTotal, remainingPartial,
+        pctClosedFully: pct(closedFully),
+        pctRemaining: pct(remaining),
+        pctRemainingTotal: pct(remainingTotal),
+        pctRemainingPartial: pct(remainingPartial),
+    };
+    await env.DB.prepare(
+        "INSERT INTO app_settings (key, value) VALUES ('gap_stats_cache', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    ).bind(JSON.stringify(gapStatsCache)).run();
+
     return allGaps;
 }
 
@@ -462,10 +489,18 @@ export default {
             try {
                 if (!env.GEMINI_API_KEY) return json({ error: 'No hay clave de Gemini configurada' }, 400);
 
-                const settingsRow = await env.DB.prepare(
-                    "SELECT value FROM app_settings WHERE key = 'last_completed_market_date'"
-                ).first();
-                const targetDate = settingsRow?.value;
+                // ?date=YYYY-MM-DD permite regenerar (o generar por primera vez) el
+                // resumen de una jornada pasada puntual, siempre que ya exista un
+                // snapshot de gaps para esa fecha — sin esto, solo se podía generar
+                // el de la última jornada cerrada.
+                const requestedDate = url.searchParams.get('date');
+                let targetDate = requestedDate;
+                if (!targetDate) {
+                    const settingsRow = await env.DB.prepare(
+                        "SELECT value FROM app_settings WHERE key = 'last_completed_market_date'"
+                    ).first();
+                    targetDate = settingsRow?.value;
+                }
                 if (!targetDate) {
                     return json({ error: 'Todavía no hay una jornada de mercado cerrada. Se genera automáticamente después del cierre.' }, 400);
                 }
@@ -725,46 +760,22 @@ export default {
 
         // Ciclo de vida histórico de los gaps de todos los tickers activos: cuántos se
         // originaron alguna vez, cuántos terminaron completamente cubiertos por precio
-        // posterior, y de los que siguen abiertos hoy, cuántos nunca se tocaron vs.
-        // cuántos están parcialmente erosionados. Usa el historial completo de cada
-        // ticker (no gaps_history, que solo guarda snapshots del set activo del día).
+        // posterior, y de los que siguen abiertos hoy. Se sirve desde el cache que
+        // arma recalculateGaps() (mismo cómputo, misma pasada que gaps_history) — si
+        // todavía no hay cache (primera vez), se calcula una vez y se guarda.
         if (url.pathname === '/gaps/stats') {
             try {
-                const activeTickers = await getActiveTickers(env);
-                let originated = 0, closedFully = 0, remainingTotal = 0, remainingPartial = 0;
-
-                for (const ticker of activeTickers) {
-                    const { results } = await env.DB.prepare(
-                        "SELECT date, high_price, low_price, close_price FROM daily_prices WHERE ticker = ? ORDER BY date ASC"
-                    ).bind(ticker).all();
-                    if (!results || results.length < 2) continue;
-
-                    const mapped = results.map(r => ({
-                        datetime: r.date,
-                        high: r.high_price,
-                        low: r.low_price,
-                        close: r.close_price,
-                    }));
-                    const stats = computeGapLifecycle(ticker, mapped);
-                    originated += stats.originated;
-                    closedFully += stats.closedFully;
-                    remainingTotal += stats.remainingTotal;
-                    remainingPartial += stats.remainingPartial;
+                const cached = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'gap_stats_cache'").first();
+                if (cached?.value) {
+                    return json(JSON.parse(cached.value));
                 }
 
-                const remaining = remainingTotal + remainingPartial;
-                const pct = (n) => (originated > 0 ? parseFloat(((n / originated) * 100).toFixed(1)) : 0);
-
-                return json({
-                    originated,
-                    closedFully,
-                    remaining,
-                    remainingTotal,
-                    remainingPartial,
-                    pctClosedFully: pct(closedFully),
-                    pctRemaining: pct(remaining),
-                    pctRemainingTotal: pct(remainingTotal),
-                    pctRemainingPartial: pct(remainingPartial),
+                const activeTickers = await getActiveTickers(env);
+                await recalculateGaps(env, activeTickers);
+                const fresh = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'gap_stats_cache'").first();
+                return json(fresh?.value ? JSON.parse(fresh.value) : {
+                    originated: 0, closedFully: 0, remaining: 0, remainingTotal: 0, remainingPartial: 0,
+                    pctClosedFully: 0, pctRemaining: 0, pctRemainingTotal: 0, pctRemainingPartial: 0,
                 });
             } catch (e) {
                 return json({ error: e.message }, 500);
