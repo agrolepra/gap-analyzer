@@ -171,7 +171,10 @@ export const DashboardPage: React.FC = () => {
       {error && <div className={styles.error}>{error}</div>}
 
       {loading ? (
-        <div className={styles.loadingState}>Cargando dashboard...</div>
+        <div className={styles.loadingState}>
+          <span className={styles.spinner} />
+          <span>Cargando dashboard...</span>
+        </div>
       ) : (
         <>
           <div className={styles.kpiGrid}>
@@ -248,7 +251,11 @@ export const DashboardPage: React.FC = () => {
                         <Cell key={entry.name} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                       ))}
                     </Pie>
-                    <Tooltip contentStyle={{ background: '#1a1a24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8 }} />
+                    <Tooltip
+                      contentStyle={{ background: '#1a1a24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8 }}
+                      itemStyle={{ color: '#f4f4f5' }}
+                      labelStyle={{ color: '#f4f4f5' }}
+                    />
                     <Legend />
                   </PieChart>
                 </ResponsiveContainer>
@@ -260,7 +267,12 @@ export const DashboardPage: React.FC = () => {
                   <BarChart data={trendData}>
                     <XAxis dataKey="date" stroke="var(--text-muted)" fontSize={12} />
                     <YAxis stroke="var(--text-muted)" fontSize={12} allowDecimals={false} />
-                    <Tooltip contentStyle={{ background: '#1a1a24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8 }} />
+                    <Tooltip
+                      cursor={{ fill: 'rgba(99, 102, 241, 0.12)' }}
+                      contentStyle={{ background: '#1a1a24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8 }}
+                      itemStyle={{ color: '#f4f4f5' }}
+                      labelStyle={{ color: '#f4f4f5' }}
+                    />
                     <Bar dataKey="gaps" fill="#6366f1" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>

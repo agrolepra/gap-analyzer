@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { Settings, BarChart2, Database, TrendingUp, LogOut, GitCommitHorizontal } from 'lucide-react';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -8,6 +8,23 @@ import { DashboardPage, ConfigPage, HistoryPage, PricesPage, GapsPage } from './
 import { JobStatusBanner } from './components/organisms/JobStatusBanner/JobStatusBanner';
 import { ToastContainer } from './components/organisms/ToastContainer/ToastContainer';
 import './App.css';
+
+const PAGE_TITLES: Record<string, string> = {
+  '/': 'Dashboard',
+  '/prices': 'Cotizaciones',
+  '/gaps': 'Gaps',
+  '/history': 'Historial',
+  '/config': 'Configuración',
+};
+
+function PageTitleUpdater() {
+  const location = useLocation();
+  useEffect(() => {
+    const label = PAGE_TITLES[location.pathname];
+    document.title = label ? `Gap Analyzer: ${label}` : 'Gap Analyzer';
+  }, [location.pathname]);
+  return null;
+}
 
 function NavItem({ to, icon, label }: { to: string; icon: React.ReactNode; label: string }) {
   const location = useLocation();
@@ -27,6 +44,7 @@ function AppShell() {
 
   return (
     <div className="app-container">
+      <PageTitleUpdater />
       {/* Sidebar for Desktop */}
       <nav className="glass-panel sidebar">
         <div className="logo">GapAnalyzer</div>
