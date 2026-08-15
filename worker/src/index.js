@@ -523,7 +523,11 @@ export default {
 
         if (url.pathname === '/ai-summary/latest' && request.method === 'GET') {
             try {
-                const latest = await env.DB.prepare("SELECT * FROM ai_summaries ORDER BY generated_at DESC LIMIT 1").first();
+                // El "vigente" es el de la jornada de mercado más reciente
+                // (summary_date), no el que se generó/regeneró más tarde en el
+                // tiempo real (generated_at) — regenerar un resumen viejo no debe
+                // hacer que ese pase a mostrarse como el actual.
+                const latest = await env.DB.prepare("SELECT * FROM ai_summaries ORDER BY summary_date DESC LIMIT 1").first();
                 return json({ summary: latest || null });
             } catch (e) {
                 return json({ error: e.message }, 500);
@@ -533,7 +537,7 @@ export default {
         if (url.pathname === '/ai-summary/history' && request.method === 'GET') {
             try {
                 const { results } = await env.DB.prepare(
-                    "SELECT * FROM ai_summaries ORDER BY generated_at DESC LIMIT 90"
+                    "SELECT * FROM ai_summaries ORDER BY summary_date DESC LIMIT 90"
                 ).all();
                 return json({ summaries: results });
             } catch (e) {
