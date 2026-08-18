@@ -385,12 +385,21 @@ async function runJob(job, env, ctx) {
         // tarda o falla, el job de ingesta ya quedó 'done' de forma segura, y el cron
         // reintenta el resumen solo (ver scheduled()) sin volver a tocar la ingesta.
         if (job.type === 'daily_update') {
+            // job.to_date es la fecha de calendario en que se encoló el job, no
+            // necesariamente un día con rueda (fin de semana, feriado). Si se usa esa
+            // fecha tal cual, last_completed_market_date apunta a un día para el que
+            // gaps_history nunca va a tener datos — el resumen de IA queda imposible
+            // de generar para siempre. Se usa la fecha real más reciente encontrada en
+            // los precios recién actualizados.
+            const latestPriceRow = await env.DB.prepare("SELECT MAX(date) as d FROM daily_prices").first();
+            const actualMarketDate = latestPriceRow?.d || job.to_date;
+
             await env.DB.prepare(
                 "INSERT INTO app_settings (key, value) VALUES ('last_completed_market_date', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-            ).bind(job.to_date).run();
+            ).bind(actualMarketDate).run();
 
             ctx.waitUntil((async () => {
-                const { row: summaryRow } = await ensureDailySummary(env, job.to_date, 'auto');
+                const { row: summaryRow } = await ensureDailySummary(env, actualMarketDate, 'auto');
                 if (summaryRow) {
                     await sendEmail(summaryRow.summary, env);
                     await sendWhatsApp(summaryRow.summary, env);
@@ -831,6 +840,11 @@ export default {
             // (Gemini falló o tardó demasiado la vez anterior), reintentar. Como
             // ensureDailySummary es idempotente, esto es seguro de reintentar cada
             // minuto hasta que salga bien — sin gastar tokens de más una vez logrado.
+            // IMPORTANTE: nunca hay que cortar acá con `return` — si last_completed_market_date
+            // quedó mal seteado (ej. un fin de semana, día sin datos: nunca va a existir un
+            // gaps_history para esa fecha, entonces esto reintenta para siempre) esto
+            // bloquearía la Prioridad 4 indefinidamente, y el sistema deja de actualizar
+            // precios por completo — pasó de verdad (3 días frenado por esto).
             const lastCompletedRow = await env.DB.prepare(
                 "SELECT value FROM app_settings WHERE key = 'last_completed_market_date'"
             ).first();
@@ -844,7 +858,6 @@ export default {
                         await sendEmail(summaryRow.summary, env);
                         await sendWhatsApp(summaryRow.summary, env);
                     }
-                    return;
                 }
             }
 
@@ -854,11 +867,12 @@ export default {
             const now = new Date();
             const nowHHMM = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')}`;
             const today = todayStr();
+            const dayOfWeek = now.getUTCDay(); // 0=domingo, 6=sábado — sin rueda, no tiene sentido correr
 
             const lastRunRow = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'last_daily_update_date'").first();
             const alreadyRanToday = lastRunRow?.value === today;
 
-            if (!alreadyRanToday && isWithinWindow(nowHHMM, updateHour, 5)) {
+            if (!alreadyRanToday && dayOfWeek !== 0 && dayOfWeek !== 6 && isWithinWindow(nowHHMM, updateHour, 5)) {
                 const activeTickers = await getActiveTickers(env);
                 if (activeTickers.length > 0) {
                     const jobId = await enqueueJob(env, { type: 'daily_update', tickers: activeTickers, from_date: null, to_date: today });
