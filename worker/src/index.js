@@ -161,14 +161,15 @@ async function processJobBatch(job, env) {
         // configurada) pisa esa fila con los valores finales del día.
         if (env?.DB) {
             const stmt = env.DB.prepare(`
-                INSERT INTO daily_prices (ticker, date, open_price, high_price, low_price, close_price, volume)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO daily_prices (ticker, date, open_price, high_price, low_price, close_price, volume, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(ticker, date) DO UPDATE SET
                     open_price = excluded.open_price,
                     high_price = excluded.high_price,
                     low_price = excluded.low_price,
                     close_price = excluded.close_price,
-                    volume = excluded.volume
+                    volume = excluded.volume,
+                    updated_at = CURRENT_TIMESTAMP
             `);
             const batchStmts = tickerData.values.map(day =>
                 stmt.bind(ticker, day.datetime, parseFloat(day.open), parseFloat(day.high), parseFloat(day.low), parseFloat(day.close), parseInt(day.volume || 0))
@@ -557,7 +558,14 @@ export default {
         // ---- Tickers (fuente única de verdad) ----
         if (url.pathname === '/tickers' && request.method === 'GET') {
             try {
-                const { results } = await env.DB.prepare("SELECT ticker, active, created_at FROM tickers ORDER BY ticker ASC").all();
+                const { results } = await env.DB.prepare(`
+                    SELECT t.ticker, t.active, t.created_at, dp.last_updated
+                    FROM tickers t
+                    LEFT JOIN (
+                        SELECT ticker, MAX(updated_at) as last_updated FROM daily_prices GROUP BY ticker
+                    ) dp ON dp.ticker = t.ticker
+                    ORDER BY t.ticker ASC
+                `).all();
                 return json({ tickers: results });
             } catch (e) {
                 return json({ error: e.message }, 500);

@@ -12,6 +12,12 @@ CREATE TABLE IF NOT EXISTS daily_prices (
     close_price REAL NOT NULL,
     volume INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Sin DEFAULT CURRENT_TIMESTAMP: D1 no permite default no-constante en
+    -- ALTER TABLE ADD COLUMN. Se setea explícitamente en cada INSERT/UPSERT.
+    -- A diferencia de created_at (fecha de creación de la fila), esta se
+    -- actualiza en cada upsert — refleja cuándo se trajo el precio por
+    -- última vez, no cuándo se vio ese ticker por primera vez.
+    updated_at TIMESTAMP,
     UNIQUE(ticker, date)
 );
 

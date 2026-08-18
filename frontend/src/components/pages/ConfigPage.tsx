@@ -6,6 +6,7 @@ import { Toggle } from '../atoms/Toggle';
 import { Button } from '../atoms/Button';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
+import { formatDateTimeBA } from '../../utils/formatDate';
 import styles from './ConfigPage.module.css';
 
 const WORKER = 'https://gap-analyzer-worker.agrolepra.workers.dev';
@@ -32,6 +33,11 @@ interface TickerRow {
   ticker: string;
   active: number;
   created_at: string;
+  last_updated: string | null;
+}
+
+function lastUpdatedLabel(lastUpdated: string | null): string {
+  return lastUpdated ? `Actualizado: ${formatDateTimeBA(lastUpdated)}` : 'Todavía sin cotizaciones cargadas';
 }
 
 export const ConfigPage: React.FC = () => {
@@ -285,7 +291,7 @@ export const ConfigPage: React.FC = () => {
             {activeTickers.length > 0 && (
               <div className={styles.tickerGrid}>
                 {activeTickers.map(t => (
-                  <div key={t.ticker} className={styles.tickerChip}>
+                  <div key={t.ticker} className={styles.tickerChip} title={lastUpdatedLabel(t.last_updated)}>
                     <span className={styles.tickerName}>{t.ticker}</span>
                     <Toggle
                       checked={t.active === 1}
@@ -310,7 +316,7 @@ export const ConfigPage: React.FC = () => {
                 {showInactive && (
                   <div className={styles.tickerGrid}>
                     {inactiveTickers.map(t => (
-                      <div key={t.ticker} className={styles.tickerChip}>
+                      <div key={t.ticker} className={styles.tickerChip} title={lastUpdatedLabel(t.last_updated)}>
                         <span className={`${styles.tickerName} ${styles.tickerInactive}`}>{t.ticker}</span>
                         <Toggle
                           checked={t.active === 1}
