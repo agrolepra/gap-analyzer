@@ -918,13 +918,20 @@ export default {
 
             // Prioridad 3: si la última jornada cerrada todavía no tiene resumen de IA
             // (Gemini falló o tardó demasiado la vez anterior), reintentar. Como
-            // ensureDailySummary es idempotente, esto es seguro de reintentar cada
-            // minuto hasta que salga bien — sin gastar tokens de más una vez logrado.
+            // ensureDailySummary es idempotente, esto es seguro de reintentar hasta que
+            // salga bien — pero NO en cada tick de cron (cada 1 min): el free tier de
+            // Gemini permite 20 requests/día, y reintentar cada minuto agota esa cuota
+            // en menos de media hora ante cualquier falla sostenida (pasó de verdad:
+            // un 503 transitorio se encadenó con reintentos cada minuto durante horas
+            // hasta agotar la cuota diaria, bloqueando el resumen por el resto del día).
+            // Con este freno, en el peor caso (falla todo el día) hay ~16 intentos/día,
+            // dejando margen de cuota para clicks manuales del usuario.
             // IMPORTANTE: nunca hay que cortar acá con `return` — si last_completed_market_date
             // quedó mal seteado (ej. un fin de semana, día sin datos: nunca va a existir un
             // gaps_history para esa fecha, entonces esto reintenta para siempre) esto
             // bloquearía la Prioridad 4 indefinidamente, y el sistema deja de actualizar
             // precios por completo — pasó de verdad (3 días frenado por esto).
+            const AI_SUMMARY_RETRY_COOLDOWN_SEC = 90 * 60; // 90 minutos entre reintentos automáticos
             const lastCompletedRow = await env.DB.prepare(
                 "SELECT value FROM app_settings WHERE key = 'last_completed_market_date'"
             ).first();
@@ -933,10 +940,22 @@ export default {
                     "SELECT id FROM ai_summaries WHERE summary_date = ?"
                 ).bind(lastCompletedRow.value).first();
                 if (!hasSummary) {
-                    const { row: summaryRow } = await ensureDailySummary(env, lastCompletedRow.value, 'auto');
-                    if (summaryRow) {
-                        await sendEmail(summaryRow.summary, env);
-                        await sendWhatsApp(summaryRow.summary, env);
+                    const lastAttemptRow = await env.DB.prepare(
+                        "SELECT value FROM app_settings WHERE key = 'ai_summary_last_attempt'"
+                    ).first();
+                    const lastAttemptSec = lastAttemptRow?.value ? parseInt(lastAttemptRow.value, 10) : 0;
+                    const nowSec = Math.floor(Date.now() / 1000);
+
+                    if (nowSec - lastAttemptSec >= AI_SUMMARY_RETRY_COOLDOWN_SEC) {
+                        await env.DB.prepare(
+                            "INSERT INTO app_settings (key, value) VALUES ('ai_summary_last_attempt', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+                        ).bind(String(nowSec)).run();
+
+                        const { row: summaryRow } = await ensureDailySummary(env, lastCompletedRow.value, 'auto');
+                        if (summaryRow) {
+                            await sendEmail(summaryRow.summary, env);
+                            await sendWhatsApp(summaryRow.summary, env);
+                        }
                     }
                 }
             }
