@@ -200,51 +200,115 @@ async function processJobBatch(job, env) {
 // Dashboard (GET /gaps/stats) queda siempre sincronizado con gaps_history (se
 // computan en la misma pasada) y no tiene que releer+recalcular todo en cada
 // visita a la página.
+// Núcleo compartido: recalcula gaps + ciclo de vida de UN ticker, leyendo su
+// historial completo de daily_prices. Usado tanto por recalculateGaps (todo
+// en una pasada, para /analyze manual) como por processRecalcBatch (en lotes,
+// para el recálculo automático tras cada daily_update).
+async function recalcTicker(env, ticker) {
+    const { results } = await env.DB.prepare(
+        "SELECT date, open_price, high_price, low_price, close_price FROM daily_prices WHERE ticker = ? ORDER BY date ASC"
+    ).bind(ticker).all();
+    if (!results || results.length < 2) return null;
+
+    const mapped = results.map(r => ({
+        datetime: r.date,
+        open: r.open_price,
+        high: r.high_price,
+        low: r.low_price,
+        close: r.close_price,
+    }));
+
+    const gaps = analyzeGaps(ticker, mapped);
+    const analysisDate = mapped[mapped.length - 1]?.date;
+    await saveGapsSnapshot(env, ticker, analysisDate, gaps);
+
+    const stats = computeGapLifecycle(ticker, mapped);
+    return { gaps, stats };
+}
+
+function buildGapStatsCache(stats) {
+    const remaining = stats.remainingTotal + stats.remainingPartial;
+    const pct = (n) => (stats.originated > 0 ? parseFloat(((n / stats.originated) * 100).toFixed(1)) : 0);
+    return {
+        originated: stats.originated, closedFully: stats.closedFully, remaining,
+        remainingTotal: stats.remainingTotal, remainingPartial: stats.remainingPartial,
+        pctClosedFully: pct(stats.closedFully),
+        pctRemaining: pct(remaining),
+        pctRemainingTotal: pct(stats.remainingTotal),
+        pctRemainingPartial: pct(stats.remainingPartial),
+    };
+}
+
+// Recalcula gaps leyendo solo lo ya guardado en D1 — nunca llama a TwelveData.
+// Todo en una sola pasada síncrona: lo usa /analyze (el usuario está mirando
+// la página, espera el resultado). El recálculo automático post-daily_update
+// usa processRecalcBatch en su lugar, justamente para NO hacer esto — con
+// suficientes tickers activos, esta pasada puede no alcanzar a terminar
+// dentro de los límites de una sola invocación del Worker.
 async function recalculateGaps(env, tickerList) {
     let allGaps = [];
-    let originated = 0, closedFully = 0, remainingTotal = 0, remainingPartial = 0;
+    let acc = { originated: 0, closedFully: 0, remainingTotal: 0, remainingPartial: 0 };
 
     for (const ticker of tickerList) {
-        const { results } = await env.DB.prepare(
-            "SELECT date, open_price, high_price, low_price, close_price FROM daily_prices WHERE ticker = ? ORDER BY date ASC"
-        ).bind(ticker).all();
-        if (!results || results.length < 2) continue;
-
-        const mapped = results.map(r => ({
-            datetime: r.date,
-            open: r.open_price,
-            high: r.high_price,
-            low: r.low_price,
-            close: r.close_price,
-        }));
-
-        const gaps = analyzeGaps(ticker, mapped);
-        allGaps.push(...gaps);
-
-        const analysisDate = mapped[mapped.length - 1]?.date;
-        await saveGapsSnapshot(env, ticker, analysisDate, gaps);
-
-        const stats = computeGapLifecycle(ticker, mapped);
-        originated += stats.originated;
-        closedFully += stats.closedFully;
-        remainingTotal += stats.remainingTotal;
-        remainingPartial += stats.remainingPartial;
+        const result = await recalcTicker(env, ticker);
+        if (!result) continue;
+        allGaps.push(...result.gaps);
+        acc.originated += result.stats.originated;
+        acc.closedFully += result.stats.closedFully;
+        acc.remainingTotal += result.stats.remainingTotal;
+        acc.remainingPartial += result.stats.remainingPartial;
     }
 
-    const remaining = remainingTotal + remainingPartial;
-    const pct = (n) => (originated > 0 ? parseFloat(((n / originated) * 100).toFixed(1)) : 0);
-    const gapStatsCache = {
-        originated, closedFully, remaining, remainingTotal, remainingPartial,
-        pctClosedFully: pct(closedFully),
-        pctRemaining: pct(remaining),
-        pctRemainingTotal: pct(remainingTotal),
-        pctRemainingPartial: pct(remainingPartial),
-    };
     await env.DB.prepare(
         "INSERT INTO app_settings (key, value) VALUES ('gap_stats_cache', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-    ).bind(JSON.stringify(gapStatsCache)).run();
+    ).bind(JSON.stringify(buildGapStatsCache(acc))).run();
 
     return allGaps;
+}
+
+const RECALC_BATCH_SIZE = 20; // más grande que BATCH_SIZE: acá no hay límite de TwelveData, solo costo de D1 + CPU por lote
+
+// Recalcula gaps en lotes (1 lote por tick de cron), igual que processJobBatch
+// pero sin llamadas externas. Acumula el ciclo de vida entre lotes en
+// jobs.partial_stats y lo consolida en gap_stats_cache recién en el último.
+async function processRecalcBatch(job, env) {
+    const tickers = job.tickers.split(',').map(t => t.trim()).filter(Boolean);
+    const totalBatches = Math.ceil(tickers.length / RECALC_BATCH_SIZE);
+
+    if (job.total_batches !== totalBatches) {
+        try { await env.DB.prepare("UPDATE jobs SET total_batches = ? WHERE id = ?").bind(totalBatches, job.id).run(); } catch (_) {}
+    }
+
+    const batchIndex = job.completed_batches;
+    const chunk = tickers.slice(batchIndex * RECALC_BATCH_SIZE, batchIndex * RECALC_BATCH_SIZE + RECALC_BATCH_SIZE);
+    if (chunk.length === 0) return { done: true };
+
+    let acc = job.partial_stats
+        ? JSON.parse(job.partial_stats)
+        : { originated: 0, closedFully: 0, remainingTotal: 0, remainingPartial: 0 };
+
+    for (const ticker of chunk) {
+        const result = await recalcTicker(env, ticker);
+        if (!result) continue;
+        acc.originated += result.stats.originated;
+        acc.closedFully += result.stats.closedFully;
+        acc.remainingTotal += result.stats.remainingTotal;
+        acc.remainingPartial += result.stats.remainingPartial;
+    }
+
+    const newCompleted = batchIndex + 1;
+    const done = newCompleted >= totalBatches;
+
+    await env.DB.prepare("UPDATE jobs SET completed_batches = ?, partial_stats = ? WHERE id = ?")
+        .bind(newCompleted, JSON.stringify(acc), job.id).run();
+
+    if (done) {
+        await env.DB.prepare(
+            "INSERT INTO app_settings (key, value) VALUES ('gap_stats_cache', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).bind(JSON.stringify(buildGapStatsCache(acc))).run();
+    }
+
+    return { done };
 }
 
 function gapsToCamel(gaps) {
@@ -305,7 +369,7 @@ async function ensureDailySummary(env, targetDate, triggerType) {
 
 // ----- Sistema de jobs (backfill / daily_update) -----
 
-async function enqueueJob(env, { type, tickers, from_date, to_date }) {
+async function enqueueJob(env, { type, tickers, from_date, to_date, finalize_daily }) {
     const tickersStr = tickers.join(',');
 
     if (type === 'backfill') {
@@ -317,8 +381,8 @@ async function enqueueJob(env, { type, tickers, from_date, to_date }) {
     }
 
     const result = await env.DB.prepare(
-        "INSERT INTO jobs (type, tickers, from_date, to_date, status) VALUES (?, ?, ?, ?, 'queued')"
-    ).bind(type, tickersStr, from_date || null, to_date || null).run();
+        "INSERT INTO jobs (type, tickers, from_date, to_date, status, finalize_daily) VALUES (?, ?, ?, ?, 'queued', ?)"
+    ).bind(type, tickersStr, from_date || null, to_date || null, finalize_daily ? 1 : 0).run();
     return result.meta.last_row_id;
 }
 
@@ -360,8 +424,8 @@ async function maybeStartNextJob(env, ctx) {
 // Avanza un job UN batch. Si el job tiene más batches pendientes, no los procesa acá:
 // simplemente deja el job en 'running' con su progreso actualizado y retorna — el próximo
 // tick de cron (cada 1 min) lo va a retomar exactamente donde quedó. Solo al llegar al
-// último batch se ejecuta la finalización (recálculo de gaps + IA + notificaciones para
-// daily_update, marcar 'done', y arrancar el siguiente job en cola).
+// último batch se ejecuta la finalización (marcar 'done'; para daily_update, encolar el
+// recálculo de gaps en lotes; para recalc con finalize_daily, IA + notificaciones).
 async function runJob(job, env, ctx) {
     if (job.status !== 'running') {
         await env.DB.prepare("UPDATE jobs SET status='running', started_at=CURRENT_TIMESTAMP WHERE id=?").bind(job.id).run();
@@ -369,29 +433,35 @@ async function runJob(job, env, ctx) {
 
     let done = false;
     try {
-        const result = await processJobBatch(job, env);
+        // El recálculo de gaps corre en su propio tipo de job, en lotes — con
+        // suficientes tickers activos, hacerlo todo en una sola invocación (como
+        // antes) puede no alcanzar a terminar dentro de los límites del Worker.
+        // Pasó de verdad: se cortó a mitad de camino con 137 tickers activos.
+        const result = job.type === 'recalc'
+            ? await processRecalcBatch(job, env)
+            : await processJobBatch(job, env);
         done = result.done;
 
         if (!done) return; // se retoma en el próximo tick de cron
 
         if (job.type === 'daily_update') {
             const activeTickers = await getActiveTickers(env);
-            await recalculateGaps(env, activeTickers);
+            await enqueueJob(env, { type: 'recalc', tickers: activeTickers, to_date: job.to_date, finalize_daily: 1 });
         }
 
         await env.DB.prepare("UPDATE jobs SET status='done', completed_at=CURRENT_TIMESTAMP WHERE id=?").bind(job.id).run();
         await logAudit(env.DB, `Job ${job.type} completado`, `Tickers: ${job.tickers}`);
 
         // El resumen de IA se maneja aparte, desacoplado del estado del job: si Gemini
-        // tarda o falla, el job de ingesta ya quedó 'done' de forma segura, y el cron
-        // reintenta el resumen solo (ver scheduled()) sin volver a tocar la ingesta.
-        if (job.type === 'daily_update') {
-            // job.to_date es la fecha de calendario en que se encoló el job, no
-            // necesariamente un día con rueda (fin de semana, feriado). Si se usa esa
-            // fecha tal cual, last_completed_market_date apunta a un día para el que
-            // gaps_history nunca va a tener datos — el resumen de IA queda imposible
-            // de generar para siempre. Se usa la fecha real más reciente encontrada en
-            // los precios recién actualizados.
+        // tarda o falla, el job de recálculo ya quedó 'done' de forma segura, y el
+        // cron reintenta el resumen solo (ver scheduled()) sin volver a tocar nada más.
+        if (job.type === 'recalc' && job.finalize_daily) {
+            // job.to_date es la fecha de calendario en que se encoló el daily_update
+            // original, no necesariamente un día con rueda (fin de semana, feriado).
+            // Si se usa esa fecha tal cual, last_completed_market_date apunta a un
+            // día para el que gaps_history nunca va a tener datos — el resumen de IA
+            // queda imposible de generar para siempre. Se usa la fecha real más
+            // reciente encontrada en los precios recién actualizados.
             const latestPriceRow = await env.DB.prepare("SELECT MAX(date) as d FROM daily_prices").first();
             const actualMarketDate = latestPriceRow?.d || job.to_date;
 
@@ -420,7 +490,9 @@ async function runJob(job, env, ctx) {
     // tickers casi simultáneas), dispararían llamadas a TwelveData pegadas una
     // detrás de otra sin respetar el límite de 8 req/min — esto ya pasó y dejó
     // tickers válidos sin datos. El cron (cada 1 min) es el único que arranca el
-    // siguiente job en cola, dándole a cada job su propio minuto.
+    // siguiente job en cola, dándole a cada job su propio minuto. El 'recalc' que
+    // se acaba de encolar para daily_update también espera al próximo tick por la
+    // misma razón (y de paso, no compite por CPU con lo que quede de este tick).
 }
 
 // Reactiva un ticker inactivo y encola un backfill de "catch-up" (solo lo que falta desde el último dato guardado).

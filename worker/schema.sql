@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS tickers (
 
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    type TEXT NOT NULL,
+    type TEXT NOT NULL, -- 'backfill' | 'daily_update' | 'recalc'
     tickers TEXT NOT NULL,
     from_date TEXT,
     to_date TEXT,
@@ -67,7 +67,15 @@ CREATE TABLE IF NOT EXISTS jobs (
     error_message TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
-    completed_at TIMESTAMP
+    completed_at TIMESTAMP,
+    -- Solo para type='recalc': acumulador JSON del ciclo de vida de gaps
+    -- entre lotes (se computa parcial en cada batch, se consolida al final).
+    partial_stats TEXT,
+    -- Solo para type='recalc': si es 1, al completar todos los lotes además
+    -- fija last_completed_market_date y dispara el resumen de IA — así un
+    -- recalc disparado por daily_update finaliza la jornada, pero uno
+    -- disparado por /analyze (manual) no pisa esa fecha por las dudas.
+    finalize_daily INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS ai_summaries (
