@@ -100,7 +100,15 @@ const BATCH_SIZE = 8; // máx 8 symbols por request en plan gratuito
 // de "hoy" y el mínimo baja más), la fila vieja quedaba huérfana en gaps_history para
 // siempre, mostrando un gap que ya no existía.
 async function saveGapsSnapshot(env, ticker, analysisDate, gaps) {
-    if (!env?.DB || !analysisDate) return;
+    if (!env?.DB) return;
+    // Sin analysisDate no se puede escribir el snapshot. Antes esto retornaba en
+    // silencio y un bug de tipeo (`.date` en vez de `.datetime`) dejó el recálculo
+    // entero sin escribir nada durante días, sin un solo error visible. Ahora queda
+    // registrado en audit_logs para que un fallo así se vea.
+    if (!analysisDate) {
+        try { await logAudit(env.DB, 'Error: snapshot sin fecha', `${ticker} — no se guardaron ${gaps.length} gaps`); } catch (_) {}
+        return;
+    }
     const stmts = [env.DB.prepare("DELETE FROM gaps_history WHERE ticker = ? AND analysis_date = ?").bind(ticker, analysisDate)];
     if (gaps.length > 0) {
         const insertStmt = env.DB.prepare("INSERT INTO gaps_history (ticker, type, gap_date, closest_point, farthest_point, dist_closest_pct, dist_farthest_pct, width_pct, current_close, analysis_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
@@ -112,7 +120,9 @@ async function saveGapsSnapshot(env, ticker, analysisDate, gaps) {
         await env.DB.batch(stmts);
     } catch (e) {
         console.error("Error guardando historial de gaps:", e);
-        try { await logAudit(env.DB, 'DEBUG saveGapsSnapshot error', `${ticker} ${analysisDate}: ${String(e && e.message || e)} | stmts=${stmts.length}`); } catch (_) {}
+        // A audit_logs además de console: un error que solo va a console es invisible
+        // salvo que alguien esté mirando `wrangler tail` en ese mismo instante.
+        try { await logAudit(env.DB, 'Error guardando gaps', `${ticker} ${analysisDate}: ${String(e && e.message || e).slice(0, 200)}`); } catch (_) {}
     }
 }
 
@@ -224,7 +234,11 @@ async function recalcTicker(env, ticker) {
     }));
 
     const gaps = analyzeGaps(ticker, mapped);
-    const analysisDate = mapped[mapped.length - 1]?.date;
+    // OJO: la propiedad se llama `datetime` (así la espera analyzeGaps), no `date`.
+    // Leerla como `.date` daba undefined y saveGapsSnapshot cortaba en silencio por
+    // su guard inicial — el recálculo entero (automático y el botón manual) fue un
+    // no-op durante días sin lanzar un solo error.
+    const analysisDate = mapped[mapped.length - 1]?.datetime;
     await saveGapsSnapshot(env, ticker, analysisDate, gaps);
 
     const stats = computeGapLifecycle(ticker, mapped);
@@ -930,16 +944,33 @@ export default {
     },
 
     async scheduled(event, env, ctx) {
+        // Heartbeat: deja rastro en D1 de cada invocación del cron y de hasta dónde
+        // llegó. Sin esto, un scheduled() que falla queda invisible — Cloudflare lo
+        // reporta como "Success" igual (nuestro try/catch atrapa todo) y wrangler tail
+        // no siempre es confiable desde entornos con red inestable.
+        const beat = async (phase) => {
+            try {
+                await env.DB.prepare(
+                    "INSERT INTO app_settings (key, value) VALUES ('cron_last_tick', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+                ).bind(`${new Date().toISOString()}|${phase}`).run();
+            } catch (_) {}
+        };
+
         try {
+            await beat('entry');
+
             // Prioridad 1: si hay un job 'running' con batches pendientes (quedó a medio
             // camino en el tick anterior), retomarlo por exactamente un batch más.
             const runningJob = await env.DB.prepare("SELECT * FROM jobs WHERE status = 'running' LIMIT 1").first();
             if (runningJob) {
+                await beat(`running:${runningJob.id}`);
                 await runJob(runningJob, env, ctx);
+                await beat(`running-done:${runningJob.id}`);
                 return;
             }
 
             const queuedJob = await claimNextQueuedJob(env);
+            await beat(queuedJob ? `claimed:${queuedJob.id}` : 'no-queued');
             if (queuedJob) {
                 await runJob(queuedJob, env, ctx);
                 return;
@@ -1011,8 +1042,13 @@ export default {
                     if (job) await runJob(job, env, ctx);
                 }
             }
+            await beat('end');
         } catch (e) {
             console.error('Error en scheduled():', e);
+            // Persistir el error: si scheduled() falla, Cloudflare igual reporta la
+            // ejecución como "Success" (la excepción nunca sale de acá), así que sin
+            // esto el fallo es completamente invisible desde afuera.
+            await beat(`ERROR:${String(e && e.message || e).slice(0, 200)}`);
         }
     }
 };
