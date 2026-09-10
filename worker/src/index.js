@@ -108,7 +108,12 @@ async function saveGapsSnapshot(env, ticker, analysisDate, gaps) {
             insertStmt.bind(g.ticker, g.type, g.gap_date, g.closest_point, g.farthest_point, g.dist_closest_pct, g.dist_farthest_pct, g.width_pct, g.current_close, g.analysis_date)
         ));
     }
-    try { await env.DB.batch(stmts); } catch (e) { console.error("Error guardando historial de gaps:", e); }
+    try {
+        await env.DB.batch(stmts);
+    } catch (e) {
+        console.error("Error guardando historial de gaps:", e);
+        try { await logAudit(env.DB, 'DEBUG saveGapsSnapshot error', `${ticker} ${analysisDate}: ${String(e && e.message || e)} | stmts=${stmts.length}`); } catch (_) {}
+    }
 }
 
 async function processJobBatch(job, env) {
