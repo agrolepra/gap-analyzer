@@ -30,19 +30,31 @@ function unauthorized() {
     return new Response(JSON.stringify({ error: 'No autorizado' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 }
 
+// Devuelve 'ok' | 'invalid' | 'unavailable'.
+// La distinción importa: si D1 no responde (ej. límite diario de lecturas del plan
+// gratuito agotado), NO se puede concluir que la sesión sea inválida. Antes se
+// devolvía false en ese caso, el Worker respondía 401 y el frontend deslogueaba al
+// usuario automáticamente — con la sesión intacta, solo que no se podía verificar.
 async function checkAuth(request, env) {
-    if (!env.DB) return true; // Si no hay base de datos, no forzar (evitar romper desarrollo local sin D1)
+    if (!env.DB) return 'ok'; // Si no hay base de datos, no forzar (evitar romper desarrollo local sin D1)
     const authHeader = request.headers.get('Authorization') || '';
     const token = authHeader.replace('Bearer ', '').trim();
-    if (!token) return false;
+    if (!token) return 'invalid';
 
     try {
         const session = await env.DB.prepare("SELECT username FROM user_sessions WHERE token = ?").bind(token).first();
-        return !!session;
+        return session ? 'ok' : 'invalid';
     } catch (e) {
         console.error("Error validando sesión en BD:", e);
-        return false;
+        return 'unavailable';
     }
+}
+
+function serviceUnavailable() {
+    return new Response(
+        JSON.stringify({ error: 'No se pudo verificar la sesión (base de datos no disponible). Tu sesión sigue activa, reintentá en un rato.' }),
+        { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
 }
 
 // ----- Twelve Data batch fetch -----
@@ -188,6 +200,11 @@ async function processJobBatch(job, env) {
             `);
             const batchStmts = tickerData.values.map(day =>
                 stmt.bind(ticker, day.datetime, parseFloat(day.open), parseFloat(day.high), parseFloat(day.low), parseFloat(day.close), parseInt(day.volume || 0))
+            );
+            // Se desnormaliza la última actualización en `tickers` para que /tickers
+            // no tenga que barrer daily_prices entero en cada carga de página.
+            batchStmts.push(
+                env.DB.prepare("UPDATE tickers SET last_updated = CURRENT_TIMESTAMP WHERE ticker = ?").bind(ticker)
             );
             try { await env.DB.batch(batchStmts); } catch (e) { console.error("Error insertando precios:", e); }
         }
@@ -594,8 +611,9 @@ export default {
         }
 
         // ---- Verificar auth en el resto de endpoints ----
-        const isAuth = await checkAuth(request, env);
-        if (!isAuth) return unauthorized();
+        const authStatus = await checkAuth(request, env);
+        if (authStatus === 'unavailable') return serviceUnavailable();
+        if (authStatus !== 'ok') return unauthorized();
 
         // ---- Recalcular gaps (100% D1, nunca llama a TwelveData) ----
         if (url.pathname === '/analyze') {
@@ -673,14 +691,15 @@ export default {
         // ---- Tickers (fuente única de verdad) ----
         if (url.pathname === '/tickers' && request.method === 'GET') {
             try {
-                const { results } = await env.DB.prepare(`
-                    SELECT t.ticker, t.active, t.created_at, dp.last_updated
-                    FROM tickers t
-                    LEFT JOIN (
-                        SELECT ticker, MAX(updated_at) as last_updated FROM daily_prices GROUP BY ticker
-                    ) dp ON dp.ticker = t.ticker
-                    ORDER BY t.ticker ASC
-                `).all();
+                // last_updated se guarda desnormalizado en `tickers` (lo escribe
+                // processJobBatch al actualizar precios). Antes se calculaba con un
+                // MAX(updated_at) GROUP BY sobre daily_prices, que escanea la tabla
+                // entera (~145k filas) en CADA carga de página — /tickers lo llaman
+                // Dashboard, Gaps, Cotizaciones y Configuración. Era, de lejos, el
+                // mayor consumo de lecturas de D1 de toda la app.
+                const { results } = await env.DB.prepare(
+                    "SELECT ticker, active, created_at, last_updated FROM tickers ORDER BY ticker ASC"
+                ).all();
                 return json({ tickers: results });
             } catch (e) {
                 return json({ error: e.message }, 500);
@@ -861,10 +880,22 @@ export default {
 
         if (url.pathname === '/history') {
             try {
-                // LIMIT alto (no 0): es un piso de seguridad, no una paginación real.
-                // Con ~75 tickers activos y snapshots diarios, un LIMIT bajo (antes 500)
-                // se quedaba corto en un par de días y el frontend, que ordena por
-                // analysis_date DESC, empezaba a perder días completos más viejos.
+                // ?latest=1 devuelve solo el snapshot vigente (la última fecha de
+                // análisis), que es lo único que necesitan Dashboard y Gaps para
+                // mostrar los gaps actuales. Sin esto tenían que traerse miles de
+                // filas históricas y descartarlas en el cliente, escaneando la tabla
+                // entera en cada carga de página.
+                if (url.searchParams.get('latest') === '1') {
+                    const { results } = await env.DB.prepare(
+                        "SELECT * FROM gaps_history WHERE analysis_date = (SELECT MAX(analysis_date) FROM gaps_history)"
+                    ).all();
+                    return new Response(JSON.stringify({ results }), {
+                        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+                    });
+                }
+
+                // Sin el parámetro: historial completo (lo usa Historial, que es el
+                // log de auditoría). LIMIT alto como piso de seguridad, no paginación.
                 const { results } = await env.DB.prepare("SELECT * FROM gaps_history ORDER BY analysis_date DESC LIMIT 5000").all();
                 return new Response(JSON.stringify({ results }), {
                     headers: { ...corsHeaders, 'Content-Type': 'application/json' },

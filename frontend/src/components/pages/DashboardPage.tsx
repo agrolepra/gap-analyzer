@@ -64,7 +64,7 @@ export const DashboardPage: React.FC = () => {
     setError(null);
     try {
       const [historyRes, tickersRes, summaryRes, settingsRes, summaryHistoryRes, trendRes, gapStatsRes] = await Promise.all([
-        authFetch(`${WORKER}/history`),
+        authFetch(`${WORKER}/history?latest=1`),
         authFetch(`${WORKER}/tickers`),
         authFetch(`${WORKER}/ai-summary/latest`),
         authFetch(`${WORKER}/settings`),

@@ -52,7 +52,12 @@ CREATE TABLE IF NOT EXISTS user_sessions (
 CREATE TABLE IF NOT EXISTS tickers (
     ticker TEXT PRIMARY KEY,
     active INTEGER NOT NULL DEFAULT 1,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Denormalizado a propósito: lo escribe processJobBatch al actualizar precios.
+    -- Calcularlo en la consulta (MAX(updated_at) GROUP BY sobre daily_prices) obliga
+    -- a escanear ~145k filas en CADA carga de página, porque /tickers lo llaman
+    -- Dashboard, Gaps, Cotizaciones y Configuración.
+    last_updated TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS jobs (
@@ -98,3 +103,14 @@ CREATE TABLE IF NOT EXISTS app_settings (
 -- sin closest_point en la clave, el segundo tramo pisaría al primero.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_gaps_unique
     ON gaps_history(ticker, type, gap_date, analysis_date, closest_point);
+
+-- Sin este índice, cualquier consulta por fecha de análisis (el snapshot vigente que
+-- piden Dashboard y Gaps, o el MAX(analysis_date)) obliga a escanear gaps_history
+-- entera y ordenarla en cada carga de página.
+CREATE INDEX IF NOT EXISTS idx_gaps_analysis_date
+    ON gaps_history(analysis_date);
+
+-- El índice UNIQUE(ticker, date) no sirve para consultas que filtran solo por fecha
+-- (el catch-up diario de tickers rezagados y el MAX(date) global las usan).
+CREATE INDEX IF NOT EXISTS idx_prices_date
+    ON daily_prices(date);

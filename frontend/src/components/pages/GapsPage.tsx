@@ -34,7 +34,7 @@ export const GapsPage: React.FC = () => {
     setError(null);
     try {
       const [historyRes, tickersRes] = await Promise.all([
-        authFetch(`${WORKER}/history`),
+        authFetch(`${WORKER}/history?latest=1`),
         authFetch(`${WORKER}/tickers`),
       ]);
       const data = await historyRes.json();
