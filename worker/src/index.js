@@ -469,6 +469,30 @@ async function runJob(job, env, ctx) {
                 "INSERT INTO app_settings (key, value) VALUES ('last_completed_market_date', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
             ).bind(actualMarketDate).run();
 
+            // Catch-up automático: TwelveData a veces devuelve error para un símbolo
+            // puntual dentro de una respuesta multi-symbol sin que falle el batch
+            // entero (los demás tickers de ese mismo batch sí traen datos) — antes
+            // nada reintentaba a esos tickers hasta el día siguiente, y se
+            // acumulaban rezagados en silencio (pasó de verdad: 55 de 235 tickers,
+            // incluyendo blue chips muy líquidos como AMZN/GOOGL/MSFT/TSLA, que no
+            // tienen ninguna razón real para fallar salvo un hiccup transitorio).
+            // Acá se detectan (activos sin precio para la fecha real de hoy) y se
+            // encola un backfill chico solo para esos — el próximo tick de cron los
+            // recupera sin esperar al día siguiente.
+            const { results: staleTickers } = await env.DB.prepare(`
+                SELECT t.ticker FROM tickers t
+                WHERE t.active = 1 AND t.ticker NOT IN (SELECT ticker FROM daily_prices WHERE date = ?)
+            `).bind(actualMarketDate).all();
+            if (staleTickers.length > 0) {
+                await enqueueJob(env, {
+                    type: 'backfill',
+                    tickers: staleTickers.map(r => r.ticker),
+                    from_date: actualMarketDate,
+                    to_date: todayStr(),
+                });
+                await logAudit(env.DB, 'Catch-up automático encolado', `${staleTickers.length} tickers sin dato de ${actualMarketDate}: ${staleTickers.map(r => r.ticker).join(',')}`);
+            }
+
             ctx.waitUntil((async () => {
                 const { row: summaryRow } = await ensureDailySummary(env, actualMarketDate, 'auto');
                 if (summaryRow) {
