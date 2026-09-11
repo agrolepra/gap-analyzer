@@ -16,7 +16,10 @@ export async function sendEmail(content, env) {
                 to: [env.EMAIL_TO],
                 subject: 'Reporte Diario de Gaps 📈',
                 html: `<p>Aquí tienes el resumen diario del mercado:</p><br><p>${content.replace(/\n/g, '<br>')}</p>`
-            })
+            }),
+            // Timeout obligatorio: esto corre dentro del tick del cron, y una llamada
+            // colgada mantiene viva la invocación, bloqueando los ticks siguientes.
+            signal: AbortSignal.timeout(15000),
         });
         console.log("Email enviado con éxito.");
     } catch (e) {
@@ -32,7 +35,7 @@ export async function sendWhatsApp(content, env) {
 
     try {
         const url = `https://api.callmebot.com/whatsapp.php?phone=${env.WHATSAPP_PHONE}&text=${encodeURIComponent(content)}&apikey=${env.WHATSAPP_API_KEY}`;
-        await fetch(url, { method: 'GET' });
+        await fetch(url, { method: 'GET', signal: AbortSignal.timeout(15000) });
         console.log("WhatsApp enviado con éxito.");
     } catch (e) {
         console.error("Error enviando WhatsApp:", e);

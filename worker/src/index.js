@@ -63,7 +63,10 @@ function serviceUnavailable() {
 async function fetchBatch(tickerChunk, twelvedataKey, outputsize = 30) {
     const symbols = tickerChunk.join(',');
     const url = `https://api.twelvedata.com/time_series?symbol=${symbols}&interval=1day&outputsize=${outputsize}&apikey=${twelvedataKey}`;
-    const resp = await fetch(url);
+    // Timeout: esto corre dentro del tick del cron y una llamada colgada mantiene viva
+    // la invocación, lo que impide que arranque el tick siguiente (Cloudflare no los
+    // solapa). Mejor fallar el lote y reintentarlo que frenar todo el pipeline.
+    const resp = await fetch(url, { signal: AbortSignal.timeout(25000) });
     const data = await resp.json();
 
     // Si es 1 solo ticker la API devuelve directamente el objeto con values

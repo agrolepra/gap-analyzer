@@ -24,6 +24,11 @@ Respondé en español, en 3-5 párrafos como máximo. Empezá con el panorama ge
                     // de responder; con un límite chico la respuesta real queda cortada.
                     generationConfig: { maxOutputTokens: 4096 },
                 }),
+                // Sin timeout, una llamada colgada de Gemini mantiene viva la invocación
+                // del cron, y Cloudflare no arranca el siguiente tick mientras haya uno
+                // corriendo: el pipeline entero (precios incluidos) queda congelado
+                // hasta que Gemini responda. Pasó de verdad, por horas.
+                signal: AbortSignal.timeout(25000),
             }
         );
 
