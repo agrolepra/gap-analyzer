@@ -1047,11 +1047,19 @@ export default {
                             "INSERT INTO app_settings (key, value) VALUES ('ai_summary_last_attempt', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
                         ).bind(String(nowSec)).run();
 
-                        const { row: summaryRow } = await ensureDailySummary(env, lastCompletedRow.value, 'auto');
-                        if (summaryRow) {
-                            await sendEmail(summaryRow.summary, env);
-                            await sendWhatsApp(summaryRow.summary, env);
-                        }
+                        // Desacoplado con waitUntil: una llamada a Gemini puede tardar
+                        // ~100s en fallar, y esperarla acá congela el resto del tick
+                        // (incluida la Prioridad 4, que decide si corresponde lanzar la
+                        // actualización diaria). El resumen es lo menos urgente del ciclo:
+                        // que se resuelva por su cuenta sin frenar la ingesta de precios.
+                        const marketDate = lastCompletedRow.value;
+                        ctx.waitUntil((async () => {
+                            const { row: summaryRow } = await ensureDailySummary(env, marketDate, 'auto');
+                            if (summaryRow) {
+                                await sendEmail(summaryRow.summary, env);
+                                await sendWhatsApp(summaryRow.summary, env);
+                            }
+                        })());
                     }
                 }
             }
