@@ -102,6 +102,11 @@ async function tickerExistsOnTwelveData(ticker, twelvedataKey) {
 
 const BATCH_SIZE = 8; // máx 8 symbols por request en plan gratuito
 
+// Desde dónde se carga el historial de precios de cada ticker (nuevos y
+// re-cargas). Un solo lugar para cambiarlo: lo usan el alta de tickers, la
+// importación masiva, la reactivación y el cálculo de outputsize.
+const HISTORY_START_DATE = '2024-01-02';
+
 // Procesa UN SOLO batch (hasta 8 tickers) de un job y avanza su progreso.
 // Deliberadamente no hace loop ni espera in-process entre batches: cada invocación
 // hace un único request a TwelveData y retorna. El siguiente batch se procesa en la
@@ -161,10 +166,15 @@ async function processJobBatch(job, env) {
     if (job.type === 'daily_update') {
         outputsize = 5; // colchón para no perder días si falló un tick de cron
     } else {
-        const from = job.from_date ? new Date(job.from_date) : new Date('2025-01-01');
+        const from = job.from_date ? new Date(job.from_date) : new Date(HISTORY_START_DATE);
         const to = job.to_date ? new Date(job.to_date) : new Date();
-        const days = Math.ceil((to - from) / 86400000) + 5;
-        outputsize = Math.min(Math.max(days, 30), 5000);
+        const calendarDays = Math.ceil((to - from) / 86400000);
+        // outputsize se cuenta en RUEDAS, no en días corridos: pedir 1 valor por día
+        // de calendario traía ~40% más historial del pedido (por eso los datos
+        // arrancaban en marzo 2024 con from_date de enero 2025). ~252 ruedas por año,
+        // más un margen por feriados.
+        const tradingDays = Math.ceil(calendarDays * 252 / 365) + 15;
+        outputsize = Math.min(Math.max(tradingDays, 30), 5000);
     }
 
     let allGaps = [];
@@ -182,7 +192,15 @@ async function processJobBatch(job, env) {
             continue;
         }
 
-        const sortedData = [...tickerData.values].reverse(); // más antiguo → más reciente
+        // TwelveData devuelve las últimas N ruedas, sin respetar una fecha de inicio:
+        // se recorta acá para no guardar historial anterior al pedido (más filas en D1
+        // sin que nadie las haya pedido, y el recálculo de gaps las leería todas).
+        const rawValues = job.from_date
+            ? tickerData.values.filter(d => d.datetime >= job.from_date)
+            : tickerData.values;
+        if (!rawValues.length) continue;
+
+        const sortedData = [...rawValues].reverse(); // más antiguo → más reciente
 
         // 1. Guardar precios en BD. Upsert (no IGNORE): si el ticker se agrega con el
         // mercado abierto, la fila del día se crea con el precio intradía — con IGNORE
@@ -201,7 +219,7 @@ async function processJobBatch(job, env) {
                     volume = excluded.volume,
                     updated_at = CURRENT_TIMESTAMP
             `);
-            const batchStmts = tickerData.values.map(day =>
+            const batchStmts = rawValues.map(day =>
                 stmt.bind(ticker, day.datetime, parseFloat(day.open), parseFloat(day.high), parseFloat(day.low), parseFloat(day.close), parseInt(day.volume || 0))
             );
             // Se desnormaliza la última actualización en `tickers` para que /tickers
@@ -567,7 +585,7 @@ async function runJob(job, env, ctx) {
 async function reactivateTicker(env, ticker) {
     await env.DB.prepare("UPDATE tickers SET active = 1 WHERE ticker = ?").bind(ticker).run();
 
-    // Re-encola el backfill completo (2025-01-01 -> hoy), no solo desde el
+    // Re-encola el backfill completo (desde HISTORY_START_DATE -> hoy), no solo desde el
     // último dato guardado. Antes se calculaba el "hueco" mirando solo
     // MAX(date), asumiendo que si el dato más reciente era de hoy ya estaba
     // completo — pero eso es falso si el backfill inicial quedó truncado (ej.
@@ -575,7 +593,7 @@ async function reactivateTicker(env, ticker) {
     // final. El upsert de daily_prices hace que re-pedir días que ya están
     // guardados sea gratis en términos de corrección (se pisan con el mismo
     // valor), así que no hay costo real en no intentar ser "inteligente" acá.
-    await enqueueJob(env, { type: 'backfill', tickers: [ticker], from_date: '2025-01-01', to_date: todayStr() });
+    await enqueueJob(env, { type: 'backfill', tickers: [ticker], from_date: HISTORY_START_DATE, to_date: todayStr() });
     await logAudit(env.DB, 'Ticker reactivado', ticker);
 }
 
@@ -729,7 +747,7 @@ export default {
                         return json({ error: `${ticker} no existe o no está disponible en TwelveData` }, 400);
                     }
                     await env.DB.prepare("INSERT INTO tickers (ticker, active) VALUES (?, 1)").bind(ticker).run();
-                    await enqueueJob(env, { type: 'backfill', tickers: [ticker], from_date: '2025-01-01', to_date: todayStr() });
+                    await enqueueJob(env, { type: 'backfill', tickers: [ticker], from_date: HISTORY_START_DATE, to_date: todayStr() });
                     await logAudit(env.DB, 'Ticker agregado', ticker);
                     status = 'created';
                 } else if (existing.active === 0) {
@@ -801,7 +819,7 @@ export default {
                     for (const ticker of validNew) {
                         await env.DB.prepare("INSERT OR IGNORE INTO tickers (ticker, active) VALUES (?, 1)").bind(ticker).run();
                     }
-                    await enqueueJob(env, { type: 'backfill', tickers: validNew, from_date: '2025-01-01', to_date: todayStr() });
+                    await enqueueJob(env, { type: 'backfill', tickers: validNew, from_date: HISTORY_START_DATE, to_date: todayStr() });
                     await logAudit(env.DB, 'Tickers agregados (bulk)', validNew.join(','));
                     results.created = validNew;
                 }

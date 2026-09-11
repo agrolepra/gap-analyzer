@@ -186,3 +186,31 @@
     flex-direction: column;
   }
 }
+
+.statusRows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.statusRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.9rem;
+}
+
+.statusLabel {
+  color: var(--text-muted);
+}
+
+.statusOk {
+  color: var(--success);
+  font-weight: 600;
+}
+
+.statusBad {
+  color: var(--danger);
+  font-weight: 600;
+}

@@ -6,7 +6,7 @@ import { Toggle } from '../atoms/Toggle';
 import { Button } from '../atoms/Button';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
-import { formatDateTimeBA } from '../../utils/formatDate';
+import { formatDateDDMMYYYY, formatDateTimeBA } from '../../utils/formatDate';
 import styles from './ConfigPage.module.css';
 
 const WORKER = 'https://gap-analyzer-worker.agrolepra.workers.dev';
@@ -56,6 +56,10 @@ export const ConfigPage: React.FC = () => {
   const [bulkImporting, setBulkImporting] = useState(false);
 
   const [updateHourBA, setUpdateHourBA] = useState(DEFAULT_UPDATE_HOUR_BA);
+  const [systemStatus, setSystemStatus] = useState<{ cronLastTick: string | null; lastMarketDate: string | null }>({
+    cronLastTick: null,
+    lastMarketDate: null,
+  });
   const [savingHour, setSavingHour] = useState(false);
 
   const [loading, setLoading] = useState(true);
@@ -74,8 +78,14 @@ export const ConfigPage: React.FC = () => {
       setTickers(tickersData.tickers || []);
 
       const settingsData = await settingsRes.json();
-      if (settingsRes.ok && settingsData.settings?.update_hour_utc) {
-        setUpdateHourBA(utcToBA(settingsData.settings.update_hour_utc));
+      if (settingsRes.ok) {
+        if (settingsData.settings?.update_hour_utc) {
+          setUpdateHourBA(utcToBA(settingsData.settings.update_hour_utc));
+        }
+        setSystemStatus({
+          cronLastTick: settingsData.settings?.cron_last_tick || null,
+          lastMarketDate: settingsData.settings?.last_completed_market_date || null,
+        });
       }
     } catch (err: any) {
       setError(err.message || 'Error desconocido al cargar la configuración.');
@@ -331,6 +341,42 @@ export const ConfigPage: React.FC = () => {
             )}
           </>
         )}
+      </div>
+
+      <div className={`glass-panel ${styles.panel}`}>
+        <h2 className={styles.sectionTitle}>Estado del Sistema</h2>
+        {(() => {
+          const tick = systemStatus.cronLastTick;
+          // El valor viene como "<ISO>|<fase>"; solo interesa la marca de tiempo.
+          const iso = tick ? tick.split('|')[0] : null;
+          const ageSec = iso ? Math.round((Date.now() - new Date(iso).getTime()) / 1000) : null;
+          // El proceso corre cada minuto: más de 3 min sin señal es que está caído.
+          const healthy = ageSec !== null && ageSec < 180;
+          return (
+            <div className={styles.statusRows}>
+              <div className={styles.statusRow}>
+                <span className={styles.statusLabel}>Proceso automático</span>
+                <span className={healthy ? styles.statusOk : styles.statusBad}>
+                  {ageSec === null
+                    ? 'Sin señal'
+                    : healthy
+                      ? `Activo (hace ${ageSec}s)`
+                      : `Detenido (sin señal hace ${Math.round(ageSec / 60)} min)`}
+                </span>
+              </div>
+              <div className={styles.statusRow}>
+                <span className={styles.statusLabel}>Última jornada procesada</span>
+                <span>{systemStatus.lastMarketDate ? formatDateDDMMYYYY(systemStatus.lastMarketDate) : '—'}</span>
+              </div>
+              {!healthy && ageSec !== null && (
+                <p className={styles.sectionDesc}>
+                  Las cotizaciones y los gaps no se están actualizando solos. Recargá esta página para volver a
+                  consultar; si sigue detenido, avisá para revisarlo.
+                </p>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       <div className={`glass-panel ${styles.panel}`}>
