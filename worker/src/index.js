@@ -385,9 +385,14 @@ async function ensureDailySummary(env, targetDate, triggerType) {
     // gaps_history (nunca se borra, es historial), pero no debe aparecer en el
     // resumen de un día en el que ya no se lo está siguiendo.
     const { results: gaps } = await env.DB.prepare(
+        // Ordenado por cercanía: generateSummary solo le manda los primeros 15 gaps al
+        // modelo, así que sin ORDER BY le llegaban 15 gaps arbitrarios de los ~1300 del
+        // día. Los más cercanos a cubrirse son los accionables, y son los que el
+        // resumen tiene que mirar.
         `SELECT gh.* FROM gaps_history gh
          JOIN tickers t ON t.ticker = gh.ticker
-         WHERE gh.analysis_date = ? AND t.active = 1`
+         WHERE gh.analysis_date = ? AND t.active = 1
+         ORDER BY gh.dist_closest_pct ASC`
     ).bind(targetDate).all();
     if (!gaps.length) return { row: null, wasCached: false };
 
