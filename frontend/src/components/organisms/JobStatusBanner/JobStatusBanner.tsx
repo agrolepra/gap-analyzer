@@ -5,7 +5,14 @@ import { useToast } from '../../../context/ToastContext';
 import styles from './JobStatusBanner.module.css';
 
 const WORKER = 'https://gap-analyzer-worker.agrolepra.workers.dev';
-const POLL_MS = 5000;
+// Polling adaptativo. Con 5s fijos, una sola pestaña abierta generaba ~34.500
+// requests por día (el preflight CORS duplica cada consulta) y el plan gratuito de
+// Workers permite 100.000 diarios — al agotarse, Cloudflare deja de ejecutar el
+// Worker, cron incluido, y el pipeline se congela hasta el reset del día siguiente.
+// La mayor parte del tiempo no hay ningún job corriendo, así que no tiene sentido
+// preguntar cada 5 segundos: se consulta seguido solo mientras hay trabajo en curso.
+const POLL_MS_ACTIVE = 5000;
+const POLL_MS_IDLE = 60000;
 
 interface Job {
   id: number;
@@ -42,12 +49,13 @@ export const JobStatusBanner: React.FC = () => {
 
     let cancelled = false;
 
-    const poll = async () => {
+    // Devuelve true si hay un job en curso o encolado (define el ritmo del próximo poll).
+    const poll = async (): Promise<boolean> => {
       try {
         const res = await authFetch(`${WORKER}/jobs/active`);
-        if (!res.ok) return;
+        if (!res.ok) return false;
         const json: JobsResponse = await res.json();
-        if (cancelled) return;
+        if (cancelled) return false;
         setData(json);
 
         const completed = json.lastCompleted;
@@ -70,14 +78,23 @@ export const JobStatusBanner: React.FC = () => {
           }
         }
         initialized.current = true;
+        return !!json.running || json.queued.length > 0;
       } catch {
         // silencioso: el banner simplemente no se actualiza este tick
+        return false;
       }
     };
 
-    poll();
-    const interval = setInterval(poll, POLL_MS);
-    return () => { cancelled = true; clearInterval(interval); };
+    // Se reprograma con setTimeout (no setInterval) para poder ajustar el ritmo
+    // según haya o no un job en curso.
+    let timer: ReturnType<typeof setTimeout>;
+    const loop = async () => {
+      const hasActiveJob = await poll();
+      if (cancelled) return;
+      timer = setTimeout(loop, hasActiveJob ? POLL_MS_ACTIVE : POLL_MS_IDLE);
+    };
+    loop();
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [authFetch, isAuthenticated, showToast]);
 
   if (!data || (!data.running && data.queued.length === 0)) return null;
