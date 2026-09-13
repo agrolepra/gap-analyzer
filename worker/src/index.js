@@ -60,9 +60,16 @@ function serviceUnavailable() {
 // ----- Twelve Data batch fetch -----
 // Twelve Data permite hasta 8 symbols en un batch gratuito.
 // La respuesta varía: objeto keyed por symbol si son múltiples, objeto directo si es uno.
-async function fetchBatch(tickerChunk, twelvedataKey, outputsize = 30) {
+async function fetchBatch(tickerChunk, twelvedataKey, options = 30) {
+    // Acepta un número (outputsize, comportamiento viejo) o { startDate, endDate }
+    // para pedir una ventana exacta — más preciso que "las últimas N ruedas desde
+    // hoy" cuando lo que hace falta es un tramo puntual de historial.
+    const { outputsize, startDate, endDate } = typeof options === 'number' ? { outputsize: options } : options;
     const symbols = tickerChunk.join(',');
-    const url = `https://api.twelvedata.com/time_series?symbol=${symbols}&interval=1day&outputsize=${outputsize}&apikey=${twelvedataKey}`;
+    const rangeParam = startDate && endDate
+        ? `start_date=${startDate}&end_date=${endDate}`
+        : `outputsize=${outputsize || 30}`;
+    const url = `https://api.twelvedata.com/time_series?symbol=${symbols}&interval=1day&${rangeParam}&apikey=${twelvedataKey}`;
     // Timeout: esto corre dentro del tick del cron y una llamada colgada mantiene viva
     // la invocación, lo que impide que arranque el tick siguiente (Cloudflare no los
     // solapa). Mejor fallar el lote y reintentarlo que frenar todo el pipeline.
@@ -104,7 +111,7 @@ const BATCH_SIZE = 8; // máx 8 symbols por request en plan gratuito
 
 // Desde dónde se carga el historial de precios de cada ticker (nuevos y
 // re-cargas). Un solo lugar para cambiarlo: lo usan el alta de tickers, la
-// importación masiva, la reactivación y el cálculo de outputsize.
+// importación masiva y la detección de huecos al reactivar un ticker.
 const HISTORY_START_DATE = '2024-01-02';
 
 // Procesa UN SOLO batch (hasta 8 tickers) de un job y avanza su progreso.
@@ -162,25 +169,22 @@ async function processJobBatch(job, env) {
     }
 
     const twelvedataKey = env.TWELVEDATA_API_KEY;
-    let outputsize;
-    if (job.type === 'daily_update') {
-        outputsize = 5; // colchón para no perder días si falló un tick de cron
-    } else {
-        const from = job.from_date ? new Date(job.from_date) : new Date(HISTORY_START_DATE);
-        const to = job.to_date ? new Date(job.to_date) : new Date();
-        const calendarDays = Math.ceil((to - from) / 86400000);
-        // outputsize se cuenta en RUEDAS, no en días corridos: pedir 1 valor por día
-        // de calendario traía ~40% más historial del pedido (por eso los datos
-        // arrancaban en marzo 2024 con from_date de enero 2025). ~252 ruedas por año,
-        // más un margen por feriados.
-        const tradingDays = Math.ceil(calendarDays * 252 / 365) + 15;
-        outputsize = Math.min(Math.max(tradingDays, 30), 5000);
-    }
+    // Un backfill siempre trae from_date/to_date explícitos: se le pide a TwelveData
+    // exactamente esa ventana con start_date/end_date, en vez de aproximar con
+    // outputsize ("las últimas N ruedas contando desde hoy") — que de paso siempre
+    // arrastra de vuelta todo el historial ya guardado en el medio, aunque el hueco
+    // real sea chico. daily_update no tiene rango (quiere "lo último"), así que sigue
+    // usando outputsize con un colchón chico para no perder días si falló un tick.
+    const fetchOptions = job.type === 'daily_update'
+        ? { outputsize: 5 }
+        : (job.from_date && job.to_date)
+            ? { startDate: job.from_date, endDate: job.to_date }
+            : { outputsize: 5000 }; // fallback defensivo: un backfill sin rango no debería ocurrir
 
     let allGaps = [];
     let batchData = {};
     try {
-        batchData = await fetchBatch(chunk, twelvedataKey, outputsize);
+        batchData = await fetchBatch(chunk, twelvedataKey, fetchOptions);
     } catch (e) {
         console.error('Error en batch fetch:', e);
     }
@@ -192,9 +196,10 @@ async function processJobBatch(job, env) {
             continue;
         }
 
-        // TwelveData devuelve las últimas N ruedas, sin respetar una fecha de inicio:
-        // se recorta acá para no guardar historial anterior al pedido (más filas en D1
-        // sin que nadie las haya pedido, y el recálculo de gaps las leería todas).
+        // Filtro de seguridad: con start_date/end_date (backfill) TwelveData ya
+        // debería devolver solo lo pedido, pero si algún ticker cae al modo
+        // outputsize (fallback defensivo) sí trae "las últimas N ruedas" sin
+        // respetar un inicio — se recorta acá para no guardar de más en D1.
         const rawValues = job.from_date
             ? tickerData.values.filter(d => d.datetime >= job.from_date)
             : tickerData.values;
@@ -436,9 +441,12 @@ async function enqueueJob(env, { type, tickers, from_date, to_date, finalize_dai
 
     if (type === 'backfill') {
         // No duplicar un backfill ya encolado/corriendo para el mismo set de tickers
+        // Y el mismo rango — un mismo ticker puede tener dos backfills legítimos a la
+        // vez (hueco al principio de su historial y hueco al final), y no deben
+        // pisarse entre sí solo por compartir la lista de tickers.
         const existing = await env.DB.prepare(
-            "SELECT id FROM jobs WHERE type = 'backfill' AND tickers = ? AND status IN ('queued','running')"
-        ).bind(tickersStr).first();
+            "SELECT id FROM jobs WHERE type = 'backfill' AND tickers = ? AND from_date IS ? AND to_date IS ? AND status IN ('queued','running')"
+        ).bind(tickersStr, from_date || null, to_date || null).first();
         if (existing) return existing.id;
     }
 
@@ -581,19 +589,49 @@ async function runJob(job, env, ctx) {
     // misma razón (y de paso, no compite por CPU con lo que quede de este tick).
 }
 
-// Reactiva un ticker inactivo y encola un backfill de "catch-up" (solo lo que falta desde el último dato guardado).
+// Rango de fechas ya guardado para un ticker en daily_prices, o null si nunca tuvo datos.
+async function getStoredRange(env, ticker) {
+    const row = await env.DB.prepare(
+        "SELECT MIN(date) as min_date, MAX(date) as max_date FROM daily_prices WHERE ticker = ?"
+    ).bind(ticker).first();
+    return row?.min_date ? { min: row.min_date, max: row.max_date } : null;
+}
+
+function shiftDateStr(dateStr, days) {
+    const d = new Date(dateStr);
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().split('T')[0];
+}
+
+// Reactiva un ticker inactivo y encola backfill(s) de "catch-up" — solo para los
+// huecos reales de historial, nunca para lo que ya está guardado.
 async function reactivateTicker(env, ticker) {
     await env.DB.prepare("UPDATE tickers SET active = 1 WHERE ticker = ?").bind(ticker).run();
 
-    // Re-encola el backfill completo (desde HISTORY_START_DATE -> hoy), no solo desde el
-    // último dato guardado. Antes se calculaba el "hueco" mirando solo
-    // MAX(date), asumiendo que si el dato más reciente era de hoy ya estaba
-    // completo — pero eso es falso si el backfill inicial quedó truncado (ej.
-    // por una colisión de rate-limit) y falta historia al PRINCIPIO, no al
-    // final. El upsert de daily_prices hace que re-pedir días que ya están
-    // guardados sea gratis en términos de corrección (se pisan con el mismo
-    // valor), así que no hay costo real en no intentar ser "inteligente" acá.
-    await enqueueJob(env, { type: 'backfill', tickers: [ticker], from_date: HISTORY_START_DATE, to_date: todayStr() });
+    const range = await getStoredRange(env, ticker);
+    const today = todayStr();
+
+    if (!range) {
+        // Nunca tuvo datos: no hay nada que preservar, hay que traer todo.
+        await enqueueJob(env, { type: 'backfill', tickers: [ticker], from_date: HISTORY_START_DATE, to_date: today });
+    } else {
+        // Ya tiene datos: pedir solo lo que falta en cada punta (antes del mínimo
+        // guardado y/o después del máximo). Antes esto se calculaba mirando solo
+        // MAX(date) y, si daba "hoy", asumía todo completo — falso si el backfill
+        // inicial quedó truncado al PRINCIPIO (ej. una colisión de rate-limit). Se
+        // había reemplazado por "traer todo de nuevo, totalidad, el upsert lo hace
+        // gratis" — pero un upsert que reescribe un valor sin cambios sigue contando
+        // como fila escrita contra la cuota diaria de D1. Ese razonamiento fue lo que
+        // voló el límite diario el 2026-09-11: un solo backfill completo de 235
+        // tickers reescribió ~170k filas que en su enorme mayoría ya estaban guardadas.
+        if (range.min > HISTORY_START_DATE) {
+            await enqueueJob(env, { type: 'backfill', tickers: [ticker], from_date: HISTORY_START_DATE, to_date: shiftDateStr(range.min, -1) });
+        }
+        if (range.max < today) {
+            await enqueueJob(env, { type: 'backfill', tickers: [ticker], from_date: shiftDateStr(range.max, 1), to_date: today });
+        }
+    }
+
     await logAudit(env.DB, 'Ticker reactivado', ticker);
 }
 
