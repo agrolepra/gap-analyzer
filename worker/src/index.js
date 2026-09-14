@@ -178,7 +178,7 @@ async function processJobBatch(job, env) {
     const fetchOptions = job.type === 'daily_update'
         ? { outputsize: 5 }
         : (job.from_date && job.to_date)
-            ? { startDate: job.from_date, endDate: job.to_date }
+            ? widenIfSingleDay(job.from_date, job.to_date)
             : { outputsize: 5000 }; // fallback defensivo: un backfill sin rango no debería ocurrir
 
     let allGaps = [];
@@ -601,6 +601,19 @@ function shiftDateStr(dateStr, days) {
     const d = new Date(dateStr);
     d.setUTCDate(d.getUTCDate() + days);
     return d.toISOString().split('T')[0];
+}
+
+// TwelveData no devuelve datos cuando start_date y end_date son el mismo día —
+// confirmado en vivo el 2026-09-14: un catch-up de un solo día (típico del
+// catch-up automático post-daily_update, donde from_date == to_date == hoy)
+// volvía sin ninguna fila. Se ensancha el inicio unos días hacia atrás (nunca
+// antes de HISTORY_START_DATE) para que el rango deje de ser degenerado; el
+// upsert hace que re-traer esos días de más sea barato — es un puñado de días,
+// no el historial completo.
+function widenIfSingleDay(startDate, endDate) {
+    if (startDate !== endDate) return { startDate, endDate };
+    const padded = shiftDateStr(startDate, -5);
+    return { startDate: padded < HISTORY_START_DATE ? HISTORY_START_DATE : padded, endDate };
 }
 
 // Reactiva un ticker inactivo y encola backfill(s) de "catch-up" — solo para los
