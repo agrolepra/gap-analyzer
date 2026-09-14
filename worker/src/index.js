@@ -107,7 +107,13 @@ async function tickerExistsOnTwelveData(ticker, twelvedataKey) {
     }
 }
 
-const BATCH_SIZE = 8; // máx 8 symbols por request en plan gratuito
+const BATCH_SIZE = 8; // máx 8 symbols por request en plan gratuito (modo outputsize)
+
+// Con start_date/end_date (backfill) TwelveData parece cobrar más "crédito" por
+// símbolo que con outputsize: confirmado en vivo el 2026-09-14 que 8 símbolos
+// juntos con rango de fechas vuelven sin datos, mientras que 1, 2 y 4 sí
+// funcionan. daily_update (outputsize) no se ve afectado y sigue en BATCH_SIZE.
+const BATCH_SIZE_DATE_RANGE = 4;
 
 // Desde dónde se carga el historial de precios de cada ticker (nuevos y
 // re-cargas). Un solo lugar para cambiarlo: lo usan el alta de tickers, la
@@ -155,14 +161,18 @@ async function saveGapsSnapshot(env, ticker, analysisDate, gaps) {
 
 async function processJobBatch(job, env) {
     const tickers = job.tickers.split(',').map(t => t.trim()).filter(Boolean);
-    const totalBatches = Math.ceil(tickers.length / BATCH_SIZE);
+    // daily_update pide con outputsize (BATCH_SIZE=8, probado durante meses); un
+    // backfill pide con start_date/end_date, que a 8 símbolos por request vuelve
+    // sin datos — se usa un batch más chico para ese caso (ver BATCH_SIZE_DATE_RANGE).
+    const batchSize = job.type === 'daily_update' ? BATCH_SIZE : BATCH_SIZE_DATE_RANGE;
+    const totalBatches = Math.ceil(tickers.length / batchSize);
 
     if (job.total_batches !== totalBatches) {
         try { await env.DB.prepare("UPDATE jobs SET total_batches = ? WHERE id = ?").bind(totalBatches, job.id).run(); } catch (_) {}
     }
 
     const batchIndex = job.completed_batches; // próximo batch a procesar (0-based)
-    const chunk = tickers.slice(batchIndex * BATCH_SIZE, batchIndex * BATCH_SIZE + BATCH_SIZE);
+    const chunk = tickers.slice(batchIndex * batchSize, batchIndex * batchSize + batchSize);
 
     if (chunk.length === 0) {
         return { done: true, gaps: [] };
