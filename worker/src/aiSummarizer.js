@@ -16,8 +16,10 @@ Respondé en español, en 3-5 párrafos como máximo. Empezá con el panorama ge
         // Pineado a una versión concreta (no "-latest"): el alias comparte capacidad
         // con todo el tráfico gratuito de Google y es más propenso a saturarse — el
         // 2026-09-14/15 devolvió 503 "high demand" durante más de 24hs seguidas.
+        // gemini-2.0-flash quedó discontinuado (404 al probarlo el 2026-09-15);
+        // Google indica gemini-3.6-flash como reemplazo directo.
         const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${geminiKey}`,
             {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
