@@ -24,6 +24,8 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .panel {
@@ -87,4 +89,17 @@
   background: var(--glass-bg);
   border-radius: 12px;
   border: 1px solid var(--border-color);
+}
+
+@media (max-width: 768px) {
+  .header h1 {
+    font-size: 1.5rem;
+  }
+  .panel {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .filterGroup {
+    flex-wrap: wrap;
+  }
 }

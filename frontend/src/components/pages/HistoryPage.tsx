@@ -83,64 +83,39 @@ export const HistoryPage: React.FC = () => {
       </div>
 
       <div className={`glass-panel ${styles.panel}`}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
-          <div>
-            <label style={{ display: 'block', fontSize: '14px', fontWeight: 500, marginBottom: '8px', color: 'var(--text-secondary)' }}>
-              Desde:
-            </label>
+        <div className={styles.filterRow}>
+          <label className={styles.dateField}>
+            <span>Desde</span>
             <input
               type="date"
+              className={styles.dateInput}
               value={dateFrom}
               onChange={(e) => setDateFrom(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '10px',
-                border: '1px solid rgba(99, 102, 241, 0.2)',
-                borderRadius: '8px',
-                backgroundColor: 'rgba(99, 102, 241, 0.05)',
-                color: 'var(--text-primary)',
-                fontFamily: 'inherit',
-                fontSize: '14px',
-              }}
             />
-          </div>
+          </label>
 
-          <div>
-            <label style={{ display: 'block', fontSize: '14px', fontWeight: 500, marginBottom: '8px', color: 'var(--text-secondary)' }}>
-              Hasta:
-            </label>
+          <label className={styles.dateField}>
+            <span>Hasta</span>
             <input
               type="date"
+              className={styles.dateInput}
               value={dateTo}
               onChange={(e) => setDateTo(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '10px',
-                border: '1px solid rgba(99, 102, 241, 0.2)',
-                borderRadius: '8px',
-                backgroundColor: 'rgba(99, 102, 241, 0.05)',
-                color: 'var(--text-primary)',
-                fontFamily: 'inherit',
-                fontSize: '14px',
-              }}
             />
-          </div>
+          </label>
 
-          <div style={{ display: 'flex', alignItems: 'flex-end' }}>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                setDateFrom('2025-01-01');
-                setDateTo(new Date().toISOString().split('T')[0]);
-              }}
-              style={{ width: '100%' }}
-            >
-              Resetear Fechas
-            </Button>
-          </div>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              setDateFrom('2025-01-01');
+              setDateTo(new Date().toISOString().split('T')[0]);
+            }}
+          >
+            Resetear Fechas
+          </Button>
         </div>
 
-        <p style={{ margin: '12px 0 0', fontSize: '13px', color: 'var(--text-muted)' }}>
+        <p className={styles.resultCount}>
           Mostrando {filteredHistory.length} de {allHistory.length} registros
         </p>
       </div>
