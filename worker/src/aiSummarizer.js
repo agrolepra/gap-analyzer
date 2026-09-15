@@ -1,5 +1,7 @@
-export async function generateSummary(gaps, geminiKey) {
-    if (!geminiKey) {
+export const DEFAULT_AI_MODEL = 'deepseek/deepseek-r1:free';
+
+export async function generateSummary(gaps, openrouterKey, model) {
+    if (!openrouterKey) {
         return null;
     }
 
@@ -13,36 +15,48 @@ ${JSON.stringify(gaps.slice(0, 15), null, 2)}
 Respondé en español, en 3-5 párrafos como máximo. Empezá con el panorama general y terminá con recomendaciones de seguimiento.`;
 
     try {
-        // Pineado a una versión concreta (no "-latest"): el alias comparte capacidad
-        // con todo el tráfico gratuito de Google y es más propenso a saturarse — el
-        // 2026-09-14/15 devolvió 503 "high demand" durante más de 24hs seguidas.
-        // gemini-2.0-flash quedó discontinuado (404 al probarlo el 2026-09-15);
-        // Google indica gemini-3.6-flash como reemplazo directo.
         const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${geminiKey}`,
+            'https://openrouter.ai/api/v1/chat/completions',
             {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${openrouterKey}`,
+                },
                 body: JSON.stringify({
-                    contents: [{ parts: [{ text: prompt }] }],
-                    generationConfig: { maxOutputTokens: 4096 },
+                    model: model || DEFAULT_AI_MODEL,
+                    messages: [{ role: 'user', content: prompt }],
+                    // Generoso a propósito: modelos de razonamiento (R1 y similares)
+                    // gastan tokens en una cadena de pensamiento interna antes de la
+                    // respuesta final — con un límite chico, esa respuesta queda
+                    // cortada (o directamente no llega a generarse). Un modelo sin
+                    // razonamiento simplemente no llega a usarlos todos.
+                    max_tokens: 8000,
                 }),
-                // Sin timeout, una llamada colgada de Gemini mantiene viva la invocación
-                // del cron, y Cloudflare no arranca el siguiente tick mientras haya uno
-                // corriendo: el pipeline entero (precios incluidos) queda congelado
-                // hasta que Gemini responda. Pasó de verdad, por horas.
-                signal: AbortSignal.timeout(25000),
+                // Generoso a propósito: un modelo de razonamiento (sobre todo una
+                // variante :free, compartida entre todos los usuarios gratuitos de
+                // OpenRouter) puede tardar bastante más que una llamada normal. Esto
+                // corre desacoplado vía ctx.waitUntil() en los caminos automáticos,
+                // así que un timeout largo acá no frena el resto del cron.
+                signal: AbortSignal.timeout(90000),
             }
         );
 
         if (!response.ok) {
             const errorText = await response.text();
-            console.error("Error from Gemini API:", errorText);
+            console.error("Error from OpenRouter API:", errorText);
             return null;
         }
 
         const data = await response.json();
-        return data.candidates?.[0]?.content?.parts?.[0]?.text || null;
+        let text = data.choices?.[0]?.message?.content || null;
+        // Algunos proveedores de R1 vía OpenRouter devuelven la cadena de
+        // razonamiento inline dentro del mismo content, envuelta en <think>...</think>
+        // — se descarta esa parte y se queda solo con la respuesta final.
+        if (text) {
+            text = text.replace(/<think>[\s\S]*?<\/think>/i, '').trim();
+        }
+        return text || null;
     } catch (e) {
         console.error("Exception generating AI summary:", e);
         return null;

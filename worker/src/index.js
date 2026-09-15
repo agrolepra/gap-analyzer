@@ -1,5 +1,5 @@
 import { analyzeGaps, computeGapLifecycle } from './gapAnalyzer.js';
-import { generateSummary } from './aiSummarizer.js';
+import { generateSummary, DEFAULT_AI_MODEL } from './aiSummarizer.js';
 import { sendEmail, sendWhatsApp } from './notifications.js';
 
 const corsHeaders = {
@@ -404,7 +404,7 @@ async function getActiveTickers(env) {
 }
 
 // Genera (o devuelve el ya existente) el resumen de IA de una jornada de mercado ya
-// cerrada. Nunca llama a Gemini dos veces para la misma summary_date — así se evita
+// cerrada. Nunca llama al modelo dos veces para la misma summary_date — así se evita
 // gastar tokens de más y el botón manual siempre puede clickearse sin riesgo. Si ya
 // existe, se devuelve tal cual (con su trigger_type original, sin pisarlo).
 async function ensureDailySummary(env, targetDate, triggerType) {
@@ -415,7 +415,7 @@ async function ensureDailySummary(env, targetDate, triggerType) {
     ).bind(targetDate).first();
     if (existing) return { row: existing, wasCached: true };
 
-    if (!env.GEMINI_API_KEY) return { row: null, wasCached: false };
+    if (!env.OPENROUTER_API_KEY) return { row: null, wasCached: false };
 
     // Solo tickers activos: uno desactivado puede conservar su última fila de
     // gaps_history (nunca se borra, es historial), pero no debe aparecer en el
@@ -432,8 +432,13 @@ async function ensureDailySummary(env, targetDate, triggerType) {
     ).bind(targetDate).all();
     if (!gaps.length) return { row: null, wasCached: false };
 
+    // Configurable desde Configuración (app_settings.ai_model) para poder probar
+    // distintos modelos de OpenRouter sin tocar código ni redeployar.
+    const modelSetting = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'ai_model'").first();
+    const model = modelSetting?.value || DEFAULT_AI_MODEL;
+
     const gapsCamel = gapsToCamel(gaps);
-    const summary = await generateSummary(gapsCamel, env.GEMINI_API_KEY);
+    const summary = await generateSummary(gapsCamel, env.OPENROUTER_API_KEY, model);
     if (!summary) return { row: null, wasCached: false };
 
     const insertResult = await env.DB.prepare(
@@ -717,7 +722,7 @@ export default {
         // ---- Resumen de IA: una sola generación por jornada cerrada, cacheada ----
         if (url.pathname === '/ai-summary' && request.method === 'POST') {
             try {
-                if (!env.GEMINI_API_KEY) return json({ error: 'No hay clave de Gemini configurada' }, 400);
+                if (!env.OPENROUTER_API_KEY) return json({ error: 'No hay clave de OpenRouter configurada' }, 400);
 
                 // ?date=YYYY-MM-DD permite regenerar (o generar por primera vez) el
                 // resumen de una jornada pasada puntual, siempre que ya exista un

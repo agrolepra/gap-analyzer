@@ -1,9 +1,10 @@
 import React from 'react';
 
-// Renderer liviano para el subconjunto de Markdown que devuelve Gemini en los
-// resúmenes (negrita, cursiva, títulos tipo "**Título:**" en su propia línea,
-// listas con * o números). No es un parser de Markdown genérico a propósito —
-// evita traer una librería pesada para un caso de uso acotado.
+// Renderer liviano para el subconjunto de Markdown que devuelve el modelo de IA
+// (DeepSeek-R1 vía OpenRouter) en los resúmenes (negrita, cursiva, títulos tipo
+// "**Título:**" en su propia línea, listas con * o números). No es un parser de
+// Markdown genérico a propósito — evita traer una librería pesada para un caso
+// de uso acotado.
 
 function renderInline(text: string): React.ReactNode[] {
   const parts: React.ReactNode[] = [];
