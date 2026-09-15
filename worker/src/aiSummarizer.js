@@ -13,15 +13,16 @@ ${JSON.stringify(gaps.slice(0, 15), null, 2)}
 Respondé en español, en 3-5 párrafos como máximo. Empezá con el panorama general y terminá con recomendaciones de seguimiento.`;
 
     try {
+        // Pineado a una versión concreta (no "-latest"): el alias comparte capacidad
+        // con todo el tráfico gratuito de Google y es más propenso a saturarse — el
+        // 2026-09-14/15 devolvió 503 "high demand" durante más de 24hs seguidas.
         const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${geminiKey}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
             {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     contents: [{ parts: [{ text: prompt }] }],
-                    // Este modelo gasta tokens en un paso de razonamiento interno antes
-                    // de responder; con un límite chico la respuesta real queda cortada.
                     generationConfig: { maxOutputTokens: 4096 },
                 }),
                 // Sin timeout, una llamada colgada de Gemini mantiene viva la invocación
