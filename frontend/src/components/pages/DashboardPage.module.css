@@ -23,7 +23,7 @@
   padding: 12px 16px;
   border-radius: 8px;
   font-size: 0.9rem;
-  border: 1px solid rgba(239, 68, 68, 0.2);
+  border: 1px solid rgba(var(--danger-rgb), 0.2);
 }
 
 .loadingState {
@@ -108,7 +108,7 @@
 }
 
 .lifecycleBarPartial {
-  background: #f59e0b;
+  background: var(--warning);
   transition: width 0.3s ease;
 }
 
@@ -175,7 +175,7 @@
   margin: 0;
   font-size: 1rem;
   font-weight: 600;
-  color: #a5b4fc;
+  color: var(--accent-text);
 }
 
 .aiDateBadge {
@@ -183,8 +183,8 @@
   margin: 0 0 12px 0;
   padding: 4px 10px;
   border-radius: 20px;
-  background: rgba(99, 102, 241, 0.15);
-  color: #a5b4fc;
+  background: rgba(var(--accent-rgb), 0.15);
+  color: var(--accent-text);
   font-size: 0.75rem;
   font-weight: 600;
 }
@@ -201,7 +201,7 @@
 }
 
 .aiText em {
-  color: #a5b4fc;
+  color: var(--accent-text);
   font-style: normal;
   font-weight: 600;
 }

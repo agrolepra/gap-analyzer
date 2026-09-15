@@ -41,7 +41,7 @@ interface GapStats {
   pctRemainingPartial: number;
 }
 
-const PIE_COLORS = ['#10b981', '#ef4444']; // Bullish, Bearish
+const PIE_COLORS = ['var(--success)', 'var(--danger)']; // Bullish, Bearish
 
 export const DashboardPage: React.FC = () => {
   const { authFetch } = useAuth();
@@ -230,7 +230,7 @@ export const DashboardPage: React.FC = () => {
                   <span className={styles.lifecycleSub}>{gapStats.pctClosedFully}%</span>
                 </div>
                 <div className={styles.lifecycleStat}>
-                  <span className={styles.kpiLabel} style={{ color: '#f59e0b' }}>Restantes por Cubrir</span>
+                  <span className={styles.kpiLabel} style={{ color: 'var(--warning)' }}>Restantes por Cubrir</span>
                   <span className={styles.kpiValue}>{gapStats.remaining}</span>
                   <span className={styles.lifecycleSub}>
                     {gapStats.pctRemaining}% · sin tocar: {gapStats.remainingTotal} ({gapStats.pctRemainingTotal}%) · parcial: {gapStats.remainingPartial} ({gapStats.pctRemainingPartial}%)
@@ -252,9 +252,9 @@ export const DashboardPage: React.FC = () => {
                       ))}
                     </Pie>
                     <Tooltip
-                      contentStyle={{ background: '#1a1a24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8 }}
-                      itemStyle={{ color: '#f4f4f5' }}
-                      labelStyle={{ color: '#f4f4f5' }}
+                      contentStyle={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: 8 }}
+                      itemStyle={{ color: 'var(--text-primary)' }}
+                      labelStyle={{ color: 'var(--text-primary)' }}
                     />
                     <Legend />
                   </PieChart>
@@ -268,12 +268,12 @@ export const DashboardPage: React.FC = () => {
                     <XAxis dataKey="date" stroke="var(--text-muted)" fontSize={12} />
                     <YAxis stroke="var(--text-muted)" fontSize={12} allowDecimals={false} />
                     <Tooltip
-                      cursor={{ fill: 'rgba(99, 102, 241, 0.12)' }}
-                      contentStyle={{ background: '#1a1a24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8 }}
-                      itemStyle={{ color: '#f4f4f5' }}
-                      labelStyle={{ color: '#f4f4f5' }}
+                      cursor={{ fill: 'rgba(var(--accent-rgb), 0.12)' }}
+                      contentStyle={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: 8 }}
+                      itemStyle={{ color: 'var(--text-primary)' }}
+                      labelStyle={{ color: 'var(--text-primary)' }}
                     />
-                    <Bar dataKey="gaps" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="gaps" fill="var(--accent-primary)" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -287,7 +287,7 @@ export const DashboardPage: React.FC = () => {
           <div className={`glass-panel ${styles.aiPanel}`}>
             <div className={styles.aiHeader}>
               <div className={styles.aiTitle}>
-                <Sparkles size={18} color="#a5b4fc" />
+                <Sparkles size={18} color="var(--accent-text)" />
                 <h3>Resumen de IA</h3>
               </div>
               <Button

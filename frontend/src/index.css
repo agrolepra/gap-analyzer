@@ -1,32 +1,44 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
 :root {
-  /* Premium Dark Mode Palette */
-  --bg-primary: #0a0a0c;
-  --bg-secondary: #121217;
-  --bg-tertiary: #1a1a24;
-  
+  /* Premium Dark Mode Palette — Rojo/Negro */
+  --bg-primary: #0c0a0a;
+  --bg-secondary: #161010;
+  --bg-tertiary: #211716;
+
   --text-primary: #f8f9fa;
   --text-secondary: #a0a0ab;
   --text-muted: #6b6b76;
-  
-  --accent-primary: #6366f1; /* Indigo */
-  --accent-hover: #4f46e5;
-  --accent-gradient: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
-  
-  --success: #10b981; /* Green for Bullish */
-  --success-bg: rgba(16, 185, 129, 0.1);
-  
-  --danger: #ef4444; /* Red for Bearish */
-  --danger-bg: rgba(239, 68, 68, 0.1);
-  
+
+  --accent-rgb: 179, 49, 47;
+  --accent-deep-rgb: 107, 20, 20;
+  --accent-primary: #b3312f; /* Rojo ladrillo */
+  --accent-hover: #922b21;
+  --accent-deep: #6b1414;
+  --accent-text: #f0a99e; /* Tinte claro del acento, para texto/links sobre fondo oscuro */
+  --accent-gradient: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-deep) 100%);
+
+  --success-rgb: 16, 185, 129;
+  --success: #10b981; /* Verde para Bullish */
+  --success-bg: rgba(var(--success-rgb), 0.1);
+
+  --danger-rgb: 239, 68, 68;
+  --danger: #ef4444; /* Rojo de alerta para Bearish/errores */
+  --danger-bg: rgba(var(--danger-rgb), 0.1);
+
+  --warning-rgb: 245, 158, 11;
+  --warning: #f59e0b;
+
+  --urgent: #f97316;
+  --caution: #eab308;
+
   --border-color: rgba(255, 255, 255, 0.08);
-  
+
   /* Glassmorphism */
-  --glass-bg: rgba(18, 18, 23, 0.6);
+  --glass-bg: rgba(22, 16, 16, 0.6);
   --glass-border: rgba(255, 255, 255, 0.05);
   --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
-  
+
   font-family: 'Inter', system-ui, Avenir, Helvetica, Arial, sans-serif;
   color-scheme: dark;
 }
@@ -35,9 +47,9 @@ body {
   margin: 0;
   padding: 0;
   background-color: var(--bg-primary);
-  background-image: 
-    radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.15) 0px, transparent 50%),
-    radial-gradient(at 100% 100%, rgba(168, 85, 247, 0.15) 0px, transparent 50%);
+  background-image:
+    radial-gradient(at 0% 0%, rgba(var(--accent-rgb), 0.15) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(var(--accent-deep-rgb), 0.15) 0px, transparent 50%);
   background-attachment: fixed;
   color: var(--text-primary);
   min-height: 100vh;
