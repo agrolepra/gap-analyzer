@@ -1052,8 +1052,13 @@ export default {
                         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
                     });
                 }
+                // LIMIT como piso de seguridad, no paginación real (mismo criterio que
+                // /history). Antes era 500: con historial desde HISTORY_START_DATE
+                // (2024-01-02) un ticker ya acumula ~680 ruedas, así que ese límite
+                // cortaba justo las más viejas — Cotizaciones nunca llegaba a mostrar
+                // enero 2024 aunque el dato estuviera guardado en daily_prices.
                 const { results } = await env.DB.prepare(
-                    "SELECT ticker, date, open_price, high_price, low_price, close_price, volume FROM daily_prices WHERE ticker = ? ORDER BY date DESC LIMIT 500"
+                    "SELECT ticker, date, open_price, high_price, low_price, close_price, volume FROM daily_prices WHERE ticker = ? ORDER BY date DESC LIMIT 5000"
                 ).bind(ticker.toUpperCase()).all();
                 return new Response(JSON.stringify({ results }), {
                     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
