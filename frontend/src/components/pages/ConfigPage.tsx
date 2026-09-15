@@ -17,19 +17,25 @@ const DEFAULT_UPDATE_HOUR_BA = '18:30';
 
 // Debe coincidir con DEFAULT_AI_MODEL en worker/src/aiSummarizer.js — es el
 // modelo que usa el backend si app_settings.ai_model todavía no fue seteado.
-const DEFAULT_AI_MODEL = 'deepseek/deepseek-r1:free';
+const DEFAULT_AI_MODEL = 'openai/gpt-4o-mini';
 const CUSTOM_MODEL_VALUE = '__custom__';
 
 // Presets pensados para poder ir probando modelos ante problemas de
 // disponibilidad de uno puntual (ver incidente 2026-09-15: gemini-flash-latest
-// y gemini-2.0-flash con 503/404 sostenidos). La opción "Personalizado" cubre
-// cualquier modelo que el catálogo de OpenRouter tenga hoy y esta lista no.
+// y gemini-2.0-flash con 503/404 sostenidos, y luego deepseek-r1:free y
+// llama-3.3-70b-instruct:free directamente retirados del catálogo de
+// OpenRouter). Verificado contra openrouter.ai/api/v1/models el 2026-09-15 —
+// el catálogo cambia seguido, si alguno de estos deja de andar usar
+// "Personalizado" con el slug que figure ahí en ese momento.
 const AI_MODEL_PRESETS = [
-  { value: 'deepseek/deepseek-r1:free', label: 'DeepSeek R1 (free, con razonamiento)' },
+  { value: 'openai/gpt-4o-mini', label: 'GPT-4o mini (pago)' },
   { value: 'deepseek/deepseek-r1', label: 'DeepSeek R1 (pago, con razonamiento)' },
   { value: 'deepseek/deepseek-chat', label: 'DeepSeek V3 Chat (pago, sin razonamiento)' },
-  { value: 'meta-llama/llama-3.3-70b-instruct:free', label: 'Llama 3.3 70B (free)' },
-  { value: 'openai/gpt-4o-mini', label: 'GPT-4o mini (pago)' },
+  // Enfocado en finanzas ("designed for real-world investment" según su ficha
+  // en OpenRouter) — no probado a fondo por nosotros, pero el dominio calza
+  // justo con lo que necesita este resumen.
+  { value: 'inclusionai/ling-3.0-flash-fin:free', label: 'Ling 3.0 Flash Fin (free, enfocado en finanzas)' },
+  { value: 'google/gemma-4-31b-it:free', label: 'Gemma 4 31B (free, Google)' },
 ];
 
 function utcToBA(utcHHMM: string): string {

@@ -231,3 +231,11 @@
   border-color: var(--accent-primary);
   box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
 }
+
+/* El <select> en sí hereda el tema porque lo estilamos directo, pero el popup
+   de opciones lo pinta el navegador con sus propios colores por default (casi
+   siempre claros) salvo que se lo indiquemos explícitamente acá. */
+.select option {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+}

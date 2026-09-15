@@ -1,4 +1,9 @@
-export const DEFAULT_AI_MODEL = 'deepseek/deepseek-r1:free';
+// deepseek/deepseek-r1:free fue retirado del catálogo de OpenRouter (confirmado
+// el 2026-09-15, dejó de aparecer en openrouter.ai/api/v1/models). Se usa un
+// modelo pago barato y confiable como default — el mismo que ya está activo en
+// producción vía app_settings.ai_model — para no volver a depender de un
+// modelo gratis que puede desaparecer del catálogo sin aviso.
+export const DEFAULT_AI_MODEL = 'openai/gpt-4o-mini';
 
 export async function generateSummary(gaps, openrouterKey, model) {
     if (!openrouterKey) {
