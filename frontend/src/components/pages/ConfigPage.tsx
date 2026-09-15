@@ -15,6 +15,23 @@ const WORKER = 'https://gap-analyzer-worker.agrolepra.workers.dev';
 const BA_OFFSET_HOURS = 3;
 const DEFAULT_UPDATE_HOUR_BA = '18:30';
 
+// Debe coincidir con DEFAULT_AI_MODEL en worker/src/aiSummarizer.js — es el
+// modelo que usa el backend si app_settings.ai_model todavía no fue seteado.
+const DEFAULT_AI_MODEL = 'deepseek/deepseek-r1:free';
+const CUSTOM_MODEL_VALUE = '__custom__';
+
+// Presets pensados para poder ir probando modelos ante problemas de
+// disponibilidad de uno puntual (ver incidente 2026-09-15: gemini-flash-latest
+// y gemini-2.0-flash con 503/404 sostenidos). La opción "Personalizado" cubre
+// cualquier modelo que el catálogo de OpenRouter tenga hoy y esta lista no.
+const AI_MODEL_PRESETS = [
+  { value: 'deepseek/deepseek-r1:free', label: 'DeepSeek R1 (free, con razonamiento)' },
+  { value: 'deepseek/deepseek-r1', label: 'DeepSeek R1 (pago, con razonamiento)' },
+  { value: 'deepseek/deepseek-chat', label: 'DeepSeek V3 Chat (pago, sin razonamiento)' },
+  { value: 'meta-llama/llama-3.3-70b-instruct:free', label: 'Llama 3.3 70B (free)' },
+  { value: 'openai/gpt-4o-mini', label: 'GPT-4o mini (pago)' },
+];
+
 function utcToBA(utcHHMM: string): string {
   const [h, m] = utcHHMM.split(':').map(Number);
   let baH = h - BA_OFFSET_HOURS;
@@ -62,6 +79,9 @@ export const ConfigPage: React.FC = () => {
   });
   const [savingHour, setSavingHour] = useState(false);
 
+  const [aiModel, setAiModel] = useState(DEFAULT_AI_MODEL);
+  const [savingModel, setSavingModel] = useState(false);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -81,6 +101,9 @@ export const ConfigPage: React.FC = () => {
       if (settingsRes.ok) {
         if (settingsData.settings?.update_hour_utc) {
           setUpdateHourBA(utcToBA(settingsData.settings.update_hour_utc));
+        }
+        if (settingsData.settings?.ai_model) {
+          setAiModel(settingsData.settings.ai_model);
         }
         setSystemStatus({
           cronLastTick: settingsData.settings?.cron_last_tick || null,
@@ -222,6 +245,33 @@ export const ConfigPage: React.FC = () => {
       setError(err.message || 'Error desconocido al guardar la hora.');
     } finally {
       setSavingHour(false);
+    }
+  };
+
+  // Si el modelo guardado no está en los presets (porque el catálogo de
+  // OpenRouter cambió, o alguien tipeó uno custom antes), el <select> muestra
+  // "Personalizado" con el valor real editable en el input de al lado.
+  const isPresetModel = AI_MODEL_PRESETS.some(p => p.value === aiModel);
+  const modelSelectValue = isPresetModel ? aiModel : CUSTOM_MODEL_VALUE;
+
+  const saveAiModel = async () => {
+    const trimmed = aiModel.trim();
+    if (!trimmed) return;
+    setSavingModel(true);
+    setError(null);
+    try {
+      const res = await authFetch(`${WORKER}/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'ai_model', value: trimmed }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Error al guardar el modelo');
+      showToast('Modelo de IA guardado — se usa desde el próximo resumen', 'success');
+    } catch (err: any) {
+      setError(err.message || 'Error desconocido al guardar el modelo.');
+    } finally {
+      setSavingModel(false);
     }
   };
 
@@ -395,6 +445,47 @@ export const ConfigPage: React.FC = () => {
         <div className={styles.actions}>
           <Button variant="primary" onClick={saveUpdateHour} isLoading={savingHour}>
             Guardar Hora
+          </Button>
+        </div>
+      </div>
+
+      <div className={`glass-panel ${styles.panel}`}>
+        <h2 className={styles.sectionTitle}>Modelo de IA</h2>
+        <p className={styles.sectionDesc}>
+          Modelo usado para generar el resumen diario vía OpenRouter. Útil para ir probando alternativas ante
+          problemas de disponibilidad de un modelo puntual (503, deprecación, etc.) sin tocar código. Se aplica
+          al próximo resumen que se genere — no reprocesa los ya existentes.
+        </p>
+        <FormField label="Modelo">
+          <select
+            className={styles.select}
+            value={modelSelectValue}
+            onChange={(e) => {
+              const value = e.target.value;
+              setAiModel(value === CUSTOM_MODEL_VALUE ? '' : value);
+            }}
+          >
+            {AI_MODEL_PRESETS.map(p => (
+              <option key={p.value} value={p.value}>{p.label}</option>
+            ))}
+            <option value={CUSTOM_MODEL_VALUE}>Personalizado...</option>
+          </select>
+        </FormField>
+        {modelSelectValue === CUSTOM_MODEL_VALUE && (
+          <FormField
+            label="Identificador del modelo (OpenRouter)"
+            description='Formato "proveedor/nombre-del-modelo", tal cual aparece en openrouter.ai/models. Ej: mistralai/mistral-large'
+          >
+            <Input
+              placeholder="proveedor/nombre-del-modelo"
+              value={aiModel}
+              onChange={(e) => setAiModel(e.target.value)}
+            />
+          </FormField>
+        )}
+        <div className={styles.actions}>
+          <Button variant="primary" onClick={saveAiModel} isLoading={savingModel} disabled={!aiModel.trim()}>
+            Guardar Modelo
           </Button>
         </div>
       </div>

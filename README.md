@@ -15,7 +15,7 @@ Una plataforma moderna para detectar y analizar saltos en precios de acciones (g
 - **Cloudflare Workers** (ejecutable globalmente)
 - **Cloudflare D1** para almacenamiento
 - **Twelve Data API** para datos de precios
-- **OpenAI/Anthropic** para análisis con IA (opcional)
+- **DeepSeek-R1 (vía OpenRouter)** para análisis con IA (opcional)
 
 ### Infraestructura
 - **Docker Compose** para desarrollo local
@@ -55,7 +55,7 @@ Una plataforma moderna para detectar y analizar saltos en precios de acciones (g
 ### Configuración
 - Almacenamiento de API keys localmente (localStorage)
 - Twelve Data key obligatoria
-- Opcional: OpenAI/Anthropic key para IA
+- Opcional: OpenRouter key para IA
 - Persistencia entre sesiones
 
 ## 🛠️ Desarrollo Local
@@ -84,8 +84,7 @@ npm run dev       # Emulador de Cloudflare en http://localhost:8787
 
 ```
 TWELVEDATA_API_KEY=tu_api_key
-ANTHROPIC_API_KEY=tu_api_key
-OPENAI_API_KEY=tu_api_key
+OPENROUTER_API_KEY=tu_api_key
 APP_USERNAME=admin
 APP_PASSWORD=changeme
 TICKERS=AAPL,MSFT,TSLA

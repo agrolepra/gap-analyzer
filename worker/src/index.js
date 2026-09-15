@@ -1,5 +1,5 @@
 import { analyzeGaps, computeGapLifecycle } from './gapAnalyzer.js';
-import { generateSummary } from './aiSummarizer.js';
+import { generateSummary, DEFAULT_AI_MODEL } from './aiSummarizer.js';
 import { sendEmail, sendWhatsApp } from './notifications.js';
 
 const corsHeaders = {
@@ -60,9 +60,16 @@ function serviceUnavailable() {
 // ----- Twelve Data batch fetch -----
 // Twelve Data permite hasta 8 symbols en un batch gratuito.
 // La respuesta varía: objeto keyed por symbol si son múltiples, objeto directo si es uno.
-async function fetchBatch(tickerChunk, twelvedataKey, outputsize = 30) {
+async function fetchBatch(tickerChunk, twelvedataKey, options = 30) {
+    // Acepta un número (outputsize, comportamiento viejo) o { startDate, endDate }
+    // para pedir una ventana exacta — más preciso que "las últimas N ruedas desde
+    // hoy" cuando lo que hace falta es un tramo puntual de historial.
+    const { outputsize, startDate, endDate } = typeof options === 'number' ? { outputsize: options } : options;
     const symbols = tickerChunk.join(',');
-    const url = `https://api.twelvedata.com/time_series?symbol=${symbols}&interval=1day&outputsize=${outputsize}&apikey=${twelvedataKey}`;
+    const rangeParam = startDate && endDate
+        ? `start_date=${startDate}&end_date=${endDate}`
+        : `outputsize=${outputsize || 30}`;
+    const url = `https://api.twelvedata.com/time_series?symbol=${symbols}&interval=1day&${rangeParam}&apikey=${twelvedataKey}`;
     // Timeout: esto corre dentro del tick del cron y una llamada colgada mantiene viva
     // la invocación, lo que impide que arranque el tick siguiente (Cloudflare no los
     // solapa). Mejor fallar el lote y reintentarlo que frenar todo el pipeline.
@@ -100,11 +107,17 @@ async function tickerExistsOnTwelveData(ticker, twelvedataKey) {
     }
 }
 
-const BATCH_SIZE = 8; // máx 8 symbols por request en plan gratuito
+const BATCH_SIZE = 8; // máx 8 symbols por request en plan gratuito (modo outputsize)
+
+// Con start_date/end_date (backfill) TwelveData parece cobrar más "crédito" por
+// símbolo que con outputsize: confirmado en vivo el 2026-09-14 que 8 símbolos
+// juntos con rango de fechas vuelven sin datos, mientras que 1, 2 y 4 sí
+// funcionan. daily_update (outputsize) no se ve afectado y sigue en BATCH_SIZE.
+const BATCH_SIZE_DATE_RANGE = 4;
 
 // Desde dónde se carga el historial de precios de cada ticker (nuevos y
 // re-cargas). Un solo lugar para cambiarlo: lo usan el alta de tickers, la
-// importación masiva, la reactivación y el cálculo de outputsize.
+// importación masiva y la detección de huecos al reactivar un ticker.
 const HISTORY_START_DATE = '2024-01-02';
 
 // Procesa UN SOLO batch (hasta 8 tickers) de un job y avanza su progreso.
@@ -148,39 +161,40 @@ async function saveGapsSnapshot(env, ticker, analysisDate, gaps) {
 
 async function processJobBatch(job, env) {
     const tickers = job.tickers.split(',').map(t => t.trim()).filter(Boolean);
-    const totalBatches = Math.ceil(tickers.length / BATCH_SIZE);
+    // daily_update pide con outputsize (BATCH_SIZE=8, probado durante meses); un
+    // backfill pide con start_date/end_date, que a 8 símbolos por request vuelve
+    // sin datos — se usa un batch más chico para ese caso (ver BATCH_SIZE_DATE_RANGE).
+    const batchSize = job.type === 'daily_update' ? BATCH_SIZE : BATCH_SIZE_DATE_RANGE;
+    const totalBatches = Math.ceil(tickers.length / batchSize);
 
     if (job.total_batches !== totalBatches) {
         try { await env.DB.prepare("UPDATE jobs SET total_batches = ? WHERE id = ?").bind(totalBatches, job.id).run(); } catch (_) {}
     }
 
     const batchIndex = job.completed_batches; // próximo batch a procesar (0-based)
-    const chunk = tickers.slice(batchIndex * BATCH_SIZE, batchIndex * BATCH_SIZE + BATCH_SIZE);
+    const chunk = tickers.slice(batchIndex * batchSize, batchIndex * batchSize + batchSize);
 
     if (chunk.length === 0) {
         return { done: true, gaps: [] };
     }
 
     const twelvedataKey = env.TWELVEDATA_API_KEY;
-    let outputsize;
-    if (job.type === 'daily_update') {
-        outputsize = 5; // colchón para no perder días si falló un tick de cron
-    } else {
-        const from = job.from_date ? new Date(job.from_date) : new Date(HISTORY_START_DATE);
-        const to = job.to_date ? new Date(job.to_date) : new Date();
-        const calendarDays = Math.ceil((to - from) / 86400000);
-        // outputsize se cuenta en RUEDAS, no en días corridos: pedir 1 valor por día
-        // de calendario traía ~40% más historial del pedido (por eso los datos
-        // arrancaban en marzo 2024 con from_date de enero 2025). ~252 ruedas por año,
-        // más un margen por feriados.
-        const tradingDays = Math.ceil(calendarDays * 252 / 365) + 15;
-        outputsize = Math.min(Math.max(tradingDays, 30), 5000);
-    }
+    // Un backfill siempre trae from_date/to_date explícitos: se le pide a TwelveData
+    // exactamente esa ventana con start_date/end_date, en vez de aproximar con
+    // outputsize ("las últimas N ruedas contando desde hoy") — que de paso siempre
+    // arrastra de vuelta todo el historial ya guardado en el medio, aunque el hueco
+    // real sea chico. daily_update no tiene rango (quiere "lo último"), así que sigue
+    // usando outputsize con un colchón chico para no perder días si falló un tick.
+    const fetchOptions = job.type === 'daily_update'
+        ? { outputsize: 5 }
+        : (job.from_date && job.to_date)
+            ? widenIfSingleDay(job.from_date, job.to_date)
+            : { outputsize: 5000 }; // fallback defensivo: un backfill sin rango no debería ocurrir
 
     let allGaps = [];
     let batchData = {};
     try {
-        batchData = await fetchBatch(chunk, twelvedataKey, outputsize);
+        batchData = await fetchBatch(chunk, twelvedataKey, fetchOptions);
     } catch (e) {
         console.error('Error en batch fetch:', e);
     }
@@ -192,9 +206,10 @@ async function processJobBatch(job, env) {
             continue;
         }
 
-        // TwelveData devuelve las últimas N ruedas, sin respetar una fecha de inicio:
-        // se recorta acá para no guardar historial anterior al pedido (más filas en D1
-        // sin que nadie las haya pedido, y el recálculo de gaps las leería todas).
+        // Filtro de seguridad: con start_date/end_date (backfill) TwelveData ya
+        // debería devolver solo lo pedido, pero si algún ticker cae al modo
+        // outputsize (fallback defensivo) sí trae "las últimas N ruedas" sin
+        // respetar un inicio — se recorta acá para no guardar de más en D1.
         const rawValues = job.from_date
             ? tickerData.values.filter(d => d.datetime >= job.from_date)
             : tickerData.values;
@@ -389,7 +404,7 @@ async function getActiveTickers(env) {
 }
 
 // Genera (o devuelve el ya existente) el resumen de IA de una jornada de mercado ya
-// cerrada. Nunca llama a Gemini dos veces para la misma summary_date — así se evita
+// cerrada. Nunca llama al modelo dos veces para la misma summary_date — así se evita
 // gastar tokens de más y el botón manual siempre puede clickearse sin riesgo. Si ya
 // existe, se devuelve tal cual (con su trigger_type original, sin pisarlo).
 async function ensureDailySummary(env, targetDate, triggerType) {
@@ -400,7 +415,7 @@ async function ensureDailySummary(env, targetDate, triggerType) {
     ).bind(targetDate).first();
     if (existing) return { row: existing, wasCached: true };
 
-    if (!env.GEMINI_API_KEY) return { row: null, wasCached: false };
+    if (!env.OPENROUTER_API_KEY) return { row: null, wasCached: false };
 
     // Solo tickers activos: uno desactivado puede conservar su última fila de
     // gaps_history (nunca se borra, es historial), pero no debe aparecer en el
@@ -417,8 +432,13 @@ async function ensureDailySummary(env, targetDate, triggerType) {
     ).bind(targetDate).all();
     if (!gaps.length) return { row: null, wasCached: false };
 
+    // Configurable desde Configuración (app_settings.ai_model) para poder probar
+    // distintos modelos de OpenRouter sin tocar código ni redeployar.
+    const modelSetting = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'ai_model'").first();
+    const model = modelSetting?.value || DEFAULT_AI_MODEL;
+
     const gapsCamel = gapsToCamel(gaps);
-    const summary = await generateSummary(gapsCamel, env.GEMINI_API_KEY);
+    const summary = await generateSummary(gapsCamel, env.OPENROUTER_API_KEY, model);
     if (!summary) return { row: null, wasCached: false };
 
     const insertResult = await env.DB.prepare(
@@ -436,9 +456,12 @@ async function enqueueJob(env, { type, tickers, from_date, to_date, finalize_dai
 
     if (type === 'backfill') {
         // No duplicar un backfill ya encolado/corriendo para el mismo set de tickers
+        // Y el mismo rango — un mismo ticker puede tener dos backfills legítimos a la
+        // vez (hueco al principio de su historial y hueco al final), y no deben
+        // pisarse entre sí solo por compartir la lista de tickers.
         const existing = await env.DB.prepare(
-            "SELECT id FROM jobs WHERE type = 'backfill' AND tickers = ? AND status IN ('queued','running')"
-        ).bind(tickersStr).first();
+            "SELECT id FROM jobs WHERE type = 'backfill' AND tickers = ? AND from_date IS ? AND to_date IS ? AND status IN ('queued','running')"
+        ).bind(tickersStr, from_date || null, to_date || null).first();
         if (existing) return existing.id;
     }
 
@@ -514,9 +537,9 @@ async function runJob(job, env, ctx) {
         await env.DB.prepare("UPDATE jobs SET status='done', completed_at=CURRENT_TIMESTAMP WHERE id=?").bind(job.id).run();
         await logAudit(env.DB, `Job ${job.type} completado`, `Tickers: ${job.tickers}`);
 
-        // El resumen de IA se maneja aparte, desacoplado del estado del job: si Gemini
-        // tarda o falla, el job de recálculo ya quedó 'done' de forma segura, y el
-        // cron reintenta el resumen solo (ver scheduled()) sin volver a tocar nada más.
+        // El resumen de IA se maneja aparte, desacoplado del estado del job: si el
+        // modelo tarda o falla, el job de recálculo ya quedó 'done' de forma segura, y
+        // el cron reintenta el resumen solo (ver scheduled()) sin volver a tocar nada más.
         if (job.type === 'recalc' && job.finalize_daily) {
             // job.to_date es la fecha de calendario en que se encoló el daily_update
             // original, no necesariamente un día con rueda (fin de semana, feriado).
@@ -581,19 +604,62 @@ async function runJob(job, env, ctx) {
     // misma razón (y de paso, no compite por CPU con lo que quede de este tick).
 }
 
-// Reactiva un ticker inactivo y encola un backfill de "catch-up" (solo lo que falta desde el último dato guardado).
+// Rango de fechas ya guardado para un ticker en daily_prices, o null si nunca tuvo datos.
+async function getStoredRange(env, ticker) {
+    const row = await env.DB.prepare(
+        "SELECT MIN(date) as min_date, MAX(date) as max_date FROM daily_prices WHERE ticker = ?"
+    ).bind(ticker).first();
+    return row?.min_date ? { min: row.min_date, max: row.max_date } : null;
+}
+
+function shiftDateStr(dateStr, days) {
+    const d = new Date(dateStr);
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().split('T')[0];
+}
+
+// TwelveData no devuelve datos cuando start_date y end_date son el mismo día —
+// confirmado en vivo el 2026-09-14: un catch-up de un solo día (típico del
+// catch-up automático post-daily_update, donde from_date == to_date == hoy)
+// volvía sin ninguna fila. Se ensancha el inicio unos días hacia atrás (nunca
+// antes de HISTORY_START_DATE) para que el rango deje de ser degenerado; el
+// upsert hace que re-traer esos días de más sea barato — es un puñado de días,
+// no el historial completo.
+function widenIfSingleDay(startDate, endDate) {
+    if (startDate !== endDate) return { startDate, endDate };
+    const padded = shiftDateStr(startDate, -5);
+    return { startDate: padded < HISTORY_START_DATE ? HISTORY_START_DATE : padded, endDate };
+}
+
+// Reactiva un ticker inactivo y encola backfill(s) de "catch-up" — solo para los
+// huecos reales de historial, nunca para lo que ya está guardado.
 async function reactivateTicker(env, ticker) {
     await env.DB.prepare("UPDATE tickers SET active = 1 WHERE ticker = ?").bind(ticker).run();
 
-    // Re-encola el backfill completo (desde HISTORY_START_DATE -> hoy), no solo desde el
-    // último dato guardado. Antes se calculaba el "hueco" mirando solo
-    // MAX(date), asumiendo que si el dato más reciente era de hoy ya estaba
-    // completo — pero eso es falso si el backfill inicial quedó truncado (ej.
-    // por una colisión de rate-limit) y falta historia al PRINCIPIO, no al
-    // final. El upsert de daily_prices hace que re-pedir días que ya están
-    // guardados sea gratis en términos de corrección (se pisan con el mismo
-    // valor), así que no hay costo real en no intentar ser "inteligente" acá.
-    await enqueueJob(env, { type: 'backfill', tickers: [ticker], from_date: HISTORY_START_DATE, to_date: todayStr() });
+    const range = await getStoredRange(env, ticker);
+    const today = todayStr();
+
+    if (!range) {
+        // Nunca tuvo datos: no hay nada que preservar, hay que traer todo.
+        await enqueueJob(env, { type: 'backfill', tickers: [ticker], from_date: HISTORY_START_DATE, to_date: today });
+    } else {
+        // Ya tiene datos: pedir solo lo que falta en cada punta (antes del mínimo
+        // guardado y/o después del máximo). Antes esto se calculaba mirando solo
+        // MAX(date) y, si daba "hoy", asumía todo completo — falso si el backfill
+        // inicial quedó truncado al PRINCIPIO (ej. una colisión de rate-limit). Se
+        // había reemplazado por "traer todo de nuevo, totalidad, el upsert lo hace
+        // gratis" — pero un upsert que reescribe un valor sin cambios sigue contando
+        // como fila escrita contra la cuota diaria de D1. Ese razonamiento fue lo que
+        // voló el límite diario el 2026-09-11: un solo backfill completo de 235
+        // tickers reescribió ~170k filas que en su enorme mayoría ya estaban guardadas.
+        if (range.min > HISTORY_START_DATE) {
+            await enqueueJob(env, { type: 'backfill', tickers: [ticker], from_date: HISTORY_START_DATE, to_date: shiftDateStr(range.min, -1) });
+        }
+        if (range.max < today) {
+            await enqueueJob(env, { type: 'backfill', tickers: [ticker], from_date: shiftDateStr(range.max, 1), to_date: today });
+        }
+    }
+
     await logAudit(env.DB, 'Ticker reactivado', ticker);
 }
 
@@ -656,7 +722,7 @@ export default {
         // ---- Resumen de IA: una sola generación por jornada cerrada, cacheada ----
         if (url.pathname === '/ai-summary' && request.method === 'POST') {
             try {
-                if (!env.GEMINI_API_KEY) return json({ error: 'No hay clave de Gemini configurada' }, 400);
+                if (!env.OPENROUTER_API_KEY) return json({ error: 'No hay clave de OpenRouter configurada' }, 400);
 
                 // ?date=YYYY-MM-DD permite regenerar (o generar por primera vez) el
                 // resumen de una jornada pasada puntual, siempre que ya exista un
@@ -675,7 +741,7 @@ export default {
                 }
 
                 const { row, wasCached } = await ensureDailySummary(env, targetDate, 'manual');
-                if (!row) return json({ error: 'No se pudo generar el resumen. Puede ser un problema temporal de Gemini — probá de nuevo en un rato.' }, 500);
+                if (!row) return json({ error: 'No se pudo generar el resumen. Puede ser un problema temporal del modelo de IA — probá de nuevo en un rato, o cambiá de modelo en Configuración.' }, 500);
 
                 return json({
                     summary: row.summary,
@@ -1034,15 +1100,15 @@ export default {
             }
 
             // Prioridad 3: si la última jornada cerrada todavía no tiene resumen de IA
-            // (Gemini falló o tardó demasiado la vez anterior), reintentar. Como
+            // (el modelo falló o tardó demasiado la vez anterior), reintentar. Como
             // ensureDailySummary es idempotente, esto es seguro de reintentar hasta que
-            // salga bien — pero NO en cada tick de cron (cada 1 min): el free tier de
-            // Gemini permite 20 requests/día, y reintentar cada minuto agota esa cuota
-            // en menos de media hora ante cualquier falla sostenida (pasó de verdad:
-            // un 503 transitorio se encadenó con reintentos cada minuto durante horas
-            // hasta agotar la cuota diaria, bloqueando el resumen por el resto del día).
-            // Con este freno, en el peor caso (falla todo el día) hay ~16 intentos/día,
-            // dejando margen de cuota para clicks manuales del usuario.
+            // salga bien — pero NO en cada tick de cron (cada 1 min): los free tier de
+            // los proveedores de IA suelen tener cuota diaria acotada, y reintentar cada
+            // minuto la agota rápido ante cualquier falla sostenida (pasó de verdad con
+            // Gemini: un 503 transitorio se encadenó con reintentos cada minuto durante
+            // horas hasta agotar la cuota diaria, bloqueando el resumen por el resto del
+            // día). Con este freno, en el peor caso (falla todo el día) hay ~16
+            // intentos/día, dejando margen de cuota para clicks manuales del usuario.
             // IMPORTANTE: nunca hay que cortar acá con `return` — si last_completed_market_date
             // quedó mal seteado (ej. un fin de semana, día sin datos: nunca va a existir un
             // gaps_history para esa fecha, entonces esto reintenta para siempre) esto
@@ -1068,8 +1134,8 @@ export default {
                             "INSERT INTO app_settings (key, value) VALUES ('ai_summary_last_attempt', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
                         ).bind(String(nowSec)).run();
 
-                        // Desacoplado con waitUntil: una llamada a Gemini puede tardar
-                        // ~100s en fallar, y esperarla acá congela el resto del tick
+                        // Desacoplado con waitUntil: una llamada al modelo puede tardar
+                        // bastante en fallar, y esperarla acá congela el resto del tick
                         // (incluida la Prioridad 4, que decide si corresponde lanzar la
                         // actualización diaria). El resumen es lo menos urgente del ciclo:
                         // que se resuelva por su cuenta sin frenar la ingesta de precios.
