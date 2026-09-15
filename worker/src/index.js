@@ -537,9 +537,9 @@ async function runJob(job, env, ctx) {
         await env.DB.prepare("UPDATE jobs SET status='done', completed_at=CURRENT_TIMESTAMP WHERE id=?").bind(job.id).run();
         await logAudit(env.DB, `Job ${job.type} completado`, `Tickers: ${job.tickers}`);
 
-        // El resumen de IA se maneja aparte, desacoplado del estado del job: si Gemini
-        // tarda o falla, el job de recálculo ya quedó 'done' de forma segura, y el
-        // cron reintenta el resumen solo (ver scheduled()) sin volver a tocar nada más.
+        // El resumen de IA se maneja aparte, desacoplado del estado del job: si el
+        // modelo tarda o falla, el job de recálculo ya quedó 'done' de forma segura, y
+        // el cron reintenta el resumen solo (ver scheduled()) sin volver a tocar nada más.
         if (job.type === 'recalc' && job.finalize_daily) {
             // job.to_date es la fecha de calendario en que se encoló el daily_update
             // original, no necesariamente un día con rueda (fin de semana, feriado).
@@ -741,7 +741,7 @@ export default {
                 }
 
                 const { row, wasCached } = await ensureDailySummary(env, targetDate, 'manual');
-                if (!row) return json({ error: 'No se pudo generar el resumen. Puede ser un problema temporal de Gemini — probá de nuevo en un rato.' }, 500);
+                if (!row) return json({ error: 'No se pudo generar el resumen. Puede ser un problema temporal del modelo de IA — probá de nuevo en un rato, o cambiá de modelo en Configuración.' }, 500);
 
                 return json({
                     summary: row.summary,
@@ -1100,15 +1100,15 @@ export default {
             }
 
             // Prioridad 3: si la última jornada cerrada todavía no tiene resumen de IA
-            // (Gemini falló o tardó demasiado la vez anterior), reintentar. Como
+            // (el modelo falló o tardó demasiado la vez anterior), reintentar. Como
             // ensureDailySummary es idempotente, esto es seguro de reintentar hasta que
-            // salga bien — pero NO en cada tick de cron (cada 1 min): el free tier de
-            // Gemini permite 20 requests/día, y reintentar cada minuto agota esa cuota
-            // en menos de media hora ante cualquier falla sostenida (pasó de verdad:
-            // un 503 transitorio se encadenó con reintentos cada minuto durante horas
-            // hasta agotar la cuota diaria, bloqueando el resumen por el resto del día).
-            // Con este freno, en el peor caso (falla todo el día) hay ~16 intentos/día,
-            // dejando margen de cuota para clicks manuales del usuario.
+            // salga bien — pero NO en cada tick de cron (cada 1 min): los free tier de
+            // los proveedores de IA suelen tener cuota diaria acotada, y reintentar cada
+            // minuto la agota rápido ante cualquier falla sostenida (pasó de verdad con
+            // Gemini: un 503 transitorio se encadenó con reintentos cada minuto durante
+            // horas hasta agotar la cuota diaria, bloqueando el resumen por el resto del
+            // día). Con este freno, en el peor caso (falla todo el día) hay ~16
+            // intentos/día, dejando margen de cuota para clicks manuales del usuario.
             // IMPORTANTE: nunca hay que cortar acá con `return` — si last_completed_market_date
             // quedó mal seteado (ej. un fin de semana, día sin datos: nunca va a existir un
             // gaps_history para esa fecha, entonces esto reintenta para siempre) esto
@@ -1134,8 +1134,8 @@ export default {
                             "INSERT INTO app_settings (key, value) VALUES ('ai_summary_last_attempt', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
                         ).bind(String(nowSec)).run();
 
-                        // Desacoplado con waitUntil: una llamada a Gemini puede tardar
-                        // ~100s en fallar, y esperarla acá congela el resto del tick
+                        // Desacoplado con waitUntil: una llamada al modelo puede tardar
+                        // bastante en fallar, y esperarla acá congela el resto del tick
                         // (incluida la Prioridad 4, que decide si corresponde lanzar la
                         // actualización diaria). El resumen es lo menos urgente del ciclo:
                         // que se resuelva por su cuenta sin frenar la ingesta de precios.
