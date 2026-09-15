@@ -70,13 +70,13 @@
 .bullish {
   background: var(--success-bg);
   color: var(--success);
-  border: 1px solid rgba(16, 185, 129, 0.2);
+  border: 1px solid rgba(var(--success-rgb), 0.2);
 }
 
 .bearish {
   background: var(--danger-bg);
   color: var(--danger);
-  border: 1px solid rgba(239, 68, 68, 0.2);
+  border: 1px solid rgba(var(--danger-rgb), 0.2);
 }
 
 .table th {
@@ -149,16 +149,16 @@
 
 /* Colores de columnas específicos */
 .colDate {
-  color: #60a5fa !important;
+  color: var(--accent-text) !important;
 }
 
 .colPrice {
-  color: #f8f9fa !important;
+  color: var(--text-primary) !important;
   font-weight: 600;
 }
 
 .colMuted {
-  color: #a0a0ab !important;
+  color: var(--text-secondary) !important;
 }
 
 .mobileCards {

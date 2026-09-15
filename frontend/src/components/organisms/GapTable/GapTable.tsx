@@ -23,9 +23,9 @@ interface GapTableProps {
 }
 
 function getDistColor(pct: number): string {
-  if (pct < 3) return '#f97316';   // naranja urgente
-  if (pct < 7) return '#eab308';   // amarillo
-  return '#a0a0ab';                 // gris normal
+  if (pct < 3) return 'var(--urgent)';
+  if (pct < 7) return 'var(--caution)';
+  return 'var(--text-secondary)';
 }
 
 export const GapTable: React.FC<GapTableProps> = ({ data, showFilters = true }) => {

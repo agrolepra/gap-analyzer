@@ -236,24 +236,24 @@
 
 /* Colores de columnas específicos */
 .colDate {
-  color: #60a5fa !important;
+  color: var(--accent-text) !important;
 }
 
 .colPrice {
-  color: #f8f9fa !important;
+  color: var(--text-primary) !important;
   font-weight: 600;
 }
 
 .colMuted {
-  color: #a0a0ab !important;
+  color: var(--text-secondary) !important;
 }
 
 .colHigh {
-  color: #10b981 !important;
+  color: var(--success) !important;
 }
 
 .colLow {
-  color: #ef4444 !important;
+  color: var(--danger) !important;
 }
 
 .mobileCards {
